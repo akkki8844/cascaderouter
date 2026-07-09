@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+.env
+logs/
+cache/
+# keep only the final validation reports as receipts
+eval_results/*
+!eval_results/eval_cascade_20260706T192415Z.json
+!eval_results/eval_cascade_20260706T192415Z.md
+answers.jsonl
+harness_input/
+harness_output/
+out.json
+.venv/
+venv/

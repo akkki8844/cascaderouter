@@ -1,0 +1,10 @@
+# The Docker image is Linux — shell scripts must check out with LF everywhere,
+# including Windows dev machines, or the container entrypoint breaks.
+*.sh text eol=lf
+Dockerfile text eol=lf
+*.py text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.json text eol=lf
+*.jsonl text eol=lf
+*.md text eol=lf

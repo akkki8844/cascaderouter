@@ -1,0 +1,10 @@
+[
+  { "task_id": "t1", "prompt": "What is the capital of France?" },
+  { "task_id": "t2", "prompt": "Classify the sentiment of this review and justify it briefly: 'Absolutely loved it — best purchase I have made all year.'" },
+  { "task_id": "t3", "prompt": "Summarise the following text in one sentence: The city council met on Tuesday to debate the new bicycle lane proposal. After four hours of public comment, largely in favour, the council voted 7-2 to approve construction starting next spring, funded by the existing transport budget." },
+  { "task_id": "t4", "prompt": "Extract and label the named entities (person, organization, location, date) in: 'Tim Cook announced Apple's new campus in Austin on March 3, 2024.'" },
+  { "task_id": "t5", "prompt": "A shop sells a jacket for $80. It is discounted by 25%, then a 10% sales tax is added. What is the final price?" },
+  { "task_id": "t6", "prompt": "Write a Python function called is_palindrome(s) that returns True if the string s reads the same forwards and backwards, ignoring case and spaces." },
+  { "task_id": "t7", "prompt": "This Python function should return the square of x but it does not. Find the bug and provide the corrected implementation: def square(x): return x + x" },
+  { "task_id": "t8", "prompt": "Tom is taller than Sam. Sam is taller than Jim. Jim is taller than Bob. Who is the second tallest?" }
+]

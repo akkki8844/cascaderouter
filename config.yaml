@@ -1,0 +1,74 @@
+# Hybrid Token-Efficient Routing Agent — configuration.
+# Everything tunable lives here; nothing model- or threshold-shaped is
+# hardcoded in Python. See AMDPLAN/03_ARCHITECTURE.md for the design.
+#
+# BACKENDS: configured for a fully REAL local stack via Ollama. The free tier
+# runs two small models (llama3.2:1b + qwen2.5:1.5b); the paid/"remote" tier
+# runs stronger models through the exact same OpenAI-compatible client.
+#
+# SUBMISSION MODE (harness_main.py): the competition harness injects
+# FIREWORKS_API_KEY, FIREWORKS_BASE_URL, and ALLOWED_MODELS at runtime and
+# apply_env_overrides() rewrites remote.base_url and remote.tiers from them
+# (Gemma models first for the bonus prize). Everything below remote: is
+# therefore only the LOCAL-DEV simulation of the remote tier — gemma4 via
+# Ollama stands in for the launch-day Fireworks Gemma.
+
+local:
+  backend: openai_compatible       # mock | openai_compatible
+  base_url: http://localhost:11434/v1   # Ollama default; vLLM: http://localhost:8000/v1
+  api_key: ollama                  # Ollama ignores it; vLLM may too
+  # Two models from DIFFERENT training lineages — correlated errors are less
+  # likely than two checkpoints of the same family (03_ARCHITECTURE §3).
+  model_a: llama3.2:1b
+  model_b: qwen2.5:1.5b
+  critic_model: llama3:latest
+  max_tokens: 160
+  temperature: 0.0
+
+remote:
+  backend: openai_compatible       # mock | openai_compatible | fireworks
+  base_url: http://localhost:11434/v1
+  api_key_env: FIREWORKS_API_KEY   # only used for non-local backends
+  # Tier order matters: cheapest/strongest first. gemma4 is the larger,
+  # notably more reliable Gemma checkpoint on this box -- it resolved a
+  # sibling-perspective logic puzzle (r42) that both gemma:latest and
+  # llama3:latest confidently got wrong 4/4 times (shared misconception,
+  # not random noise -- see router.py _remote_self_consistency). Both tiers
+  # stay in the Gemma family for bonus-prize eligibility.
+  tiers:
+    - gemma4:latest
+    - gemma:latest
+  max_tokens: 320
+  temperature: 0.0
+
+router:
+  # always_remote (v0 baseline) | always_local (v1) | heuristic (v2) | cascade (v3, target)
+  strategy: cascade
+  # Fit this with eval/calibrate.py — do not hand-tune (03_ARCHITECTURE,
+  # Calibration Methodology). 0.5 is only the pre-calibration default.
+  escalation_threshold: 0.3
+  critique_enabled: true
+  agreement_fuzzy_threshold: 0.90
+  # v2 heuristic knobs (fallback strategy only)
+  heuristic_max_prompt_chars: 400
+  heuristic_hard_markers:
+    - prove
+    - derive
+    - step by step
+    - multi-step
+    - riddle
+    - calculate
+    - compute
+    - sequence
+    - logic
+    - math
+    - solve
+    - equation
+
+cache:
+  enabled: true
+  similarity_threshold: 0.95
+  path: cache/task_cache.jsonl
+
+logging:
+  decisions_path: logs/decisions.jsonl

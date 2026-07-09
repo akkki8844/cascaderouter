@@ -1,0 +1,8 @@
+{"id": "c01", "prompt": "What is the chemical symbol for iron?", "expected": ["fe"]}
+{"id": "c02", "prompt": "Classify the sentiment of this review and justify it briefly: 'Absolutely loved it — best purchase I have made all year.'", "expected": ["positive"]}
+{"id": "c03", "prompt": "Summarise the following text in one sentence: The city council met on Tuesday to debate the new bicycle lane proposal. After four hours of public comment, largely in favour, the council voted 7-2 to approve construction starting next spring, funded by the existing transport budget.", "expected": ["council", "approve"]}
+{"id": "c04", "prompt": "Extract and label the named entities (person, organization, location, date) in: 'Tim Cook announced Apple's new campus in Austin on March 3, 2024.'", "expected": ["tim cook"]}
+{"id": "c05", "prompt": "A shop sells a jacket for $80. It is discounted by 25%, then a 10% sales tax is added. What is the final price?", "expected": ["66", "$66"]}
+{"id": "c06", "prompt": "Write a Python function called is_palindrome(s) that returns True if the string s reads the same forwards and backwards, ignoring case and spaces.", "expected": ["def is_palindrome"]}
+{"id": "c07", "prompt": "This Python function should return the square of x but it does not. Find the bug and provide the corrected implementation: def square(x): return x + x", "expected": ["x * x", "x*x", "x ** 2", "x**2"]}
+{"id": "c08", "prompt": "Tom is taller than Sam. Sam is taller than Jim. Jim is taller than Bob. Who is the second tallest?", "expected": ["sam"]}

@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.env
+logs/
+cache/
+eval_results/
+answers.jsonl
+.git/
+.venv/
+venv/

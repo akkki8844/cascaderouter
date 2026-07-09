@@ -1,0 +1,50 @@
+{"id": "r01", "prompt": "What is the capital of France?", "expected": ["Paris"]}
+{"id": "r02", "prompt": "What is the capital of Japan?", "expected": ["Tokyo"]}
+{"id": "r03", "prompt": "What is the capital of Australia?", "expected": ["Canberra"]}
+{"id": "r04", "prompt": "What is the chemical symbol for gold?", "expected": ["Au"]}
+{"id": "r05", "prompt": "Which planet is known as the Red Planet?", "expected": ["Mars"]}
+{"id": "r06", "prompt": "What is the largest ocean on Earth?", "expected": ["Pacific", "Pacific Ocean"]}
+{"id": "r07", "prompt": "How many continents are there on Earth?", "expected": ["7", "seven"]}
+{"id": "r08", "prompt": "Who wrote the play Romeo and Juliet?", "expected": ["Shakespeare", "William Shakespeare"]}
+{"id": "r09", "prompt": "What is the common name for H2O?", "expected": ["water"]}
+{"id": "r10", "prompt": "What is the currency of Japan?", "expected": ["yen", "Yen"]}
+{"id": "r11", "prompt": "Calculate 17 plus 26.", "expected": ["43"]}
+{"id": "r12", "prompt": "Calculate 9 multiplied by 8.", "expected": ["72"]}
+{"id": "r13", "prompt": "Calculate 144 divided by 12.", "expected": ["12"]}
+{"id": "r14", "prompt": "Calculate 100 minus 37.", "expected": ["63"]}
+{"id": "r15", "prompt": "Calculate 15% of 200.", "expected": ["30"]}
+{"id": "r16", "prompt": "Calculate the square root of 81.", "expected": ["9"]}
+{"id": "r17", "prompt": "Calculate 2 to the power of 6.", "expected": ["64"]}
+{"id": "r18", "prompt": "What is the remainder when 29 is divided by 5?", "expected": ["4"]}
+{"id": "r19", "prompt": "Calculate 7 times 13.", "expected": ["91"]}
+{"id": "r20", "prompt": "Calculate the sum of all integers from 1 to 10.", "expected": ["55"]}
+{"id": "r21", "prompt": "What is the first letter of the word banana?", "expected": ["b", "B"]}
+{"id": "r22", "prompt": "How many letters are in the word cat?", "expected": ["3", "three"]}
+{"id": "r23", "prompt": "What is the opposite of the word hot?", "expected": ["cold"]}
+{"id": "r24", "prompt": "What is the plural of the word child?", "expected": ["children"]}
+{"id": "r25", "prompt": "What is the past tense of the verb go?", "expected": ["went"]}
+{"id": "r26", "prompt": "Which gas do plants absorb from the atmosphere for photosynthesis?", "expected": ["carbon dioxide", "CO2"]}
+{"id": "r27", "prompt": "How many legs does a spider have?", "expected": ["8", "eight"]}
+{"id": "r28", "prompt": "What is the boiling point of water at sea level in degrees Celsius?", "expected": ["100"]}
+{"id": "r29", "prompt": "What is the smallest prime number?", "expected": ["2", "two"]}
+{"id": "r30", "prompt": "How many sides does a hexagon have?", "expected": ["6", "six"]}
+{"id": "r31", "prompt": "What is the chemical symbol for sodium?", "expected": ["Na"]}
+{"id": "r32", "prompt": "Which planet is closest to the Sun?", "expected": ["Mercury"]}
+{"id": "r33", "prompt": "Which organ pumps blood around the human body?", "expected": ["heart"]}
+{"id": "r34", "prompt": "What is the freezing point of water in degrees Fahrenheit?", "expected": ["32"]}
+{"id": "r35", "prompt": "How many days are there in a leap year?", "expected": ["366"]}
+{"id": "r36", "prompt": "What is the largest planet in our solar system?", "expected": ["Jupiter"]}
+{"id": "r37", "prompt": "What is the capital of Canada?", "expected": ["Ottawa"]}
+{"id": "r38", "prompt": "On which continent is Egypt primarily located?", "expected": ["Africa"]}
+{"id": "r39", "prompt": "How many states are there in the United States of America?", "expected": ["50", "fifty"]}
+{"id": "r40", "prompt": "What is the capital of Italy?", "expected": ["Rome"]}
+{"id": "r41", "prompt": "A train travels 60 kilometers in 30 minutes. What is its speed in kilometers per hour?", "expected": ["120"]}
+{"id": "r42", "prompt": "Alice has 3 brothers and 2 sisters. How many sisters does one of Alice's brothers have?", "expected": ["3", "three"]}
+{"id": "r43", "prompt": "If today is Monday, what day of the week will it be the day after tomorrow?", "expected": ["Wednesday"]}
+{"id": "r44", "prompt": "If 5 machines take 5 minutes to make 5 widgets, how many minutes do 100 machines take to make 100 widgets?", "expected": ["5", "five"]}
+{"id": "r45", "prompt": "What is double of half of 50?", "expected": ["50"]}
+{"id": "r46", "prompt": "What is the next number in the sequence: 2, 4, 8, 16?", "expected": ["32"]}
+{"id": "r47", "prompt": "What is 25 percent of 80?", "expected": ["20"]}
+{"id": "r48", "prompt": "What is the next number in the sequence: 1, 1, 2, 3, 5, 8?", "expected": ["13"]}
+{"id": "r49", "prompt": "An item costs 20 dollars. With a 10% discount, what is the final price in dollars?", "expected": ["18"]}
+{"id": "r50", "prompt": "How many minutes are there in 2 point 5 hours?", "expected": ["150"]}

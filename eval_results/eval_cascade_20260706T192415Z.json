@@ -1,0 +1,119 @@
+{
+  "strategy": "cascade",
+  "timestamp": "2026-07-06T19:24:15.585653+00:00",
+  "tasks": 8,
+  "accuracy": 1.0,
+  "remote_tokens_total": 2597,
+  "free_resolution_rate": 0.25,
+  "route_distribution": {
+    "local_agreement": 2,
+    "remote_summarization": 1,
+    "remote_ner": 1,
+    "remote_self_consistency": 2,
+    "remote_code_generation": 1,
+    "remote_code_debugging": 1
+  },
+  "rows": [
+    {
+      "id": "c01",
+      "route": "local_agreement",
+      "correct": true,
+      "remote_tokens": 0,
+      "local_tokens": 273,
+      "latency_s": 27.699,
+      "answer": "Fe",
+      "expected": [
+        "fe"
+      ]
+    },
+    {
+      "id": "c02",
+      "route": "local_agreement",
+      "correct": true,
+      "remote_tokens": 0,
+      "local_tokens": 263,
+      "latency_s": 5.797,
+      "answer": "positive",
+      "expected": [
+        "positive"
+      ]
+    },
+    {
+      "id": "c03",
+      "route": "remote_summarization",
+      "correct": true,
+      "remote_tokens": 196,
+      "local_tokens": 0,
+      "latency_s": 15.168,
+      "answer": "The city council approved the new bicycle lane proposal with a 7-2 vote after extensive public debate on Tuesday, allocating funds from the current transport budget for construction beginning next spring.",
+      "expected": [
+        "council",
+        "approve"
+      ]
+    },
+    {
+      "id": "c04",
+      "route": "remote_ner",
+      "correct": true,
+      "remote_tokens": 171,
+      "local_tokens": 0,
+      "latency_s": 11.078,
+      "answer": "Tim Cook (person); Apple (organization); Austin (location); March 3, 2024 (date)",
+      "expected": [
+        "tim cook"
+      ]
+    },
+    {
+      "id": "c05",
+      "route": "remote_self_consistency",
+      "correct": true,
+      "remote_tokens": 1200,
+      "local_tokens": 0,
+      "latency_s": 277.541,
+      "answer": "$66",
+      "expected": [
+        "66",
+        "$66"
+      ]
+    },
+    {
+      "id": "c06",
+      "route": "remote_code_generation",
+      "correct": true,
+      "remote_tokens": 317,
+      "local_tokens": 0,
+      "latency_s": 83.588,
+      "answer": "def is_palindrome(s):\n    \"\"\"\n    Checks if a given string s is a palindrome, ignoring case and spaces.\n\n    Args:\n        s (str): The input string.\n\n    Returns:\n        bool: True if the string is a palindrome, False otherwise.\n    \"\"\"\n    # 1. Normalize the string: convert to lowercase and remove all spaces\n    normalized_s = ''.join(char for char in s if char.isalnum()).lower()\n\n    # 2. Check for palindrome property\n    # A string is a palindrome if it reads the same forwards (s) and backwards (s[::-1])\n    return normalized_s == normalized_s[::-1]}<tool_call|>```json}```<channel|>{",
+      "expected": [
+        "def is_palindrome"
+      ]
+    },
+    {
+      "id": "c07",
+      "route": "remote_code_debugging",
+      "correct": true,
+      "remote_tokens": 168,
+      "local_tokens": 0,
+      "latency_s": 24.621,
+      "answer": "The function incorrectly adds x to itself instead of multiplying x by x (squaring it). The correction is to use the exponentiation operator or multiplication.\ndef square(x):\n    return x * x",
+      "expected": [
+        "x * x",
+        "x*x",
+        "x ** 2",
+        "x**2"
+      ]
+    },
+    {
+      "id": "c08",
+      "route": "remote_self_consistency",
+      "correct": true,
+      "remote_tokens": 545,
+      "local_tokens": 0,
+      "latency_s": 82.537,
+      "answer": "Sam",
+      "expected": [
+        "sam"
+      ]
+    }
+  ]
+}

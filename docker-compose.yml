@@ -1,0 +1,24 @@
+# Local testing of the SUBMISSION image (which is fully self-contained:
+# agent + Ollama + baked local models — see Dockerfile).
+#
+# Simulate the judging harness:
+#   1. put a tasks file at ./harness_input/tasks.json
+#      (format: [{"task_id": "t1", "prompt": "..."}, ...] — see eval/sample_input.json)
+#   2. cp .env.example .env and fill in FIREWORKS_API_KEY, FIREWORKS_BASE_URL,
+#      ALLOWED_MODELS (use real Fireworks values, or leave unset to exercise
+#      only the local tier + config.yaml remote fallback)
+#   3. docker compose run --rm agent
+#   4. results appear at ./harness_output/results.json
+#
+# The judging environment injects the env vars itself and mounts /input and
+# /output — this compose file only reproduces that locally.
+
+services:
+  agent:
+    build: .
+    env_file:
+      - path: .env
+        required: false
+    volumes:
+      - ./harness_input:/input:ro
+      - ./harness_output:/output

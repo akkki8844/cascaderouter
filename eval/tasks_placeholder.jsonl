@@ -1,0 +1,10 @@
+{"id": "t01", "prompt": "What is the capital of France?", "expected": "Paris"}
+{"id": "t02", "prompt": "What is 7 multiplied by 8?", "expected": "56"}
+{"id": "t03", "prompt": "Name the largest planet in the Solar System.", "expected": "Jupiter"}
+{"id": "t04", "prompt": "What does the acronym GPU stand for?", "expected": "Graphics Processing Unit"}
+{"id": "t05", "prompt": "hard: Prove step by step that the sum of two even integers is always even, then state the parity of 2k+2m.", "expected": "even"}
+{"id": "t06", "prompt": "What is the chemical symbol for gold?", "expected": "Au"}
+{"id": "t07", "prompt": "hard: A riddle - I speak without a mouth and hear without ears. I have no body, but I come alive with wind. What am I?", "expected": "An echo"}
+{"id": "t08", "prompt": "What is the capital of France?", "expected": "Paris"}
+{"id": "t09", "prompt": "In which year did the first human land on the Moon?", "expected": "1969"}
+{"id": "t10", "prompt": "hard: derive the closed-form sum of the first n positive integers and evaluate it for n = 100.", "expected": "5050"}
