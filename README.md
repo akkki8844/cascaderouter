@@ -1,6 +1,6 @@
 # Hybrid Token-Efficient Routing Agent
 
-**AMD Developer Hackathon: ACT II — Track 1** · Team: [TEAM NAME]
+**AMD Developer Hackathon: ACT II — Track 1** · Team: **Veritas**
 
 An AI agent that completes tasks using the **cheapest possible path**: two free local models vote first, and only tasks they can't confidently resolve pay for a remote call via **Fireworks AI** (Gemma tier first). Local tokens score as **zero** on the Track 1 leaderboard — so the agent's job is to know when it doesn't need the expensive model.
 
@@ -162,7 +162,7 @@ Dockerfile, docker-compose.yml
 - ✅ **Budgets** — ready < 60 s, < 30 s/request (25 s timeouts), < 10 min total (parallel workers), English-only outputs.
 - ✅ **Gemma via Fireworks** — `ALLOWED_MODELS` auto-ordered Gemma-first for every escalation.
 - ✅ **Public GitHub repo with README setup + usage instructions** — this file; MIT licensed (`LICENSE`).
-- ⚠️ Before submitting: fill in `[TEAM NAME]`, push the image to a public registry, and run one full harness-style test with the launch-day env values (see `AMDPLAN/07_SUBMISSION_CHECKLIST.md`).
+- ⚠️ Before submitting: confirm the GHCR package is public and run one full harness-style test with the launch-day env values (see `AMDPLAN/07_SUBMISSION_CHECKLIST.md`).
 
 ## License
 

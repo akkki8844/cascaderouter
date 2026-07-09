@@ -1,7 +1,7 @@
 # lablab.ai Submission Kit — Track 1
 
-Copy-paste content for the lablab.ai submission form. Fill `[TEAM NAME]` with the
-team's lablab.ai team name before submitting (AMD pod team id: team-3195).
+Copy-paste content for the lablab.ai submission form. Team: **Veritas**
+(AMD pod team id: team-3195).
 
 ---
 
@@ -59,8 +59,8 @@ tasks at $0 on our 50-task proxy set.
 
 ## Links (fill in)
 
-- Public GitHub repository: `https://github.com/<owner>/<repo>`
-- Docker image: `ghcr.io/<owner>/<repo>:latest`
+- Public GitHub repository: `https://github.com/akkki8844/cascaderouter`
+- Docker image: `ghcr.io/akkki8844/cascaderouter:latest`
 - Application URL / demo platform: the Docker image is the application
   (harness-run); link the GHCR package page.
 
