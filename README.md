@@ -29,13 +29,13 @@ The judging harness injects — and the container reads at runtime, never hardco
 |---|---|
 | `FIREWORKS_API_KEY` | key for ALL remote calls |
 | `FIREWORKS_BASE_URL` | ALL remote calls go through this URL (bypassing it = zero recorded tokens) |
-| `ALLOWED_MODELS` | the only permitted model ids; we auto-order them **Gemma-first** (bonus prize), largest first |
+| `ALLOWED_MODELS` | the only permitted model ids; we auto-order them **Gemma-first** (bonus prize), largest first. Official Track 1 list: `gemma-4-31b-it`, `gemma-4-26b-a4b-it`, `gemma-4-31b-it-nvfp4`, `minimax-m3`, `kimi-k2p7-code` |
 
-Budgets honored: container ready < 60 s (Ollama starts in ~2 s, models are pre-baked), < 30 s per request (25 s client timeout), < 10 min total (tasks run on a 4-worker pool), image ≪ 10 GB (~4 GB), `linux/amd64` build. No answer caching across runs: the within-run dedup cache runs in-memory and exact-match only. A failing local tier degrades to remote-only instead of failing the run; a failing single task yields an empty answer instead of a crashed container.
+Budgets honored: container ready < 60 s (Ollama starts in ~2 s, models are pre-baked), < 30 s per request (25 s client timeout), < 10 min total (tasks run on a worker pool sized for the published 2 vCPU / 4 GB grading environment), image ≪ 10 GB (~4 GB — also under the organizers' ~5 GB pull-reliability guidance), `linux/amd64` build. No answer caching across runs: the within-run dedup cache runs in-memory and exact-match only. A failing local tier degrades to remote-only instead of failing the run; a failing single task yields an empty answer instead of a crashed container.
 
 ## How it works
 
-Each task is first classified into one of the eight Track 1 capability categories, then routed down the cheapest path that still clears the accuracy gate (accuracy is a **gate**: below-threshold submissions are excluded from the leaderboard entirely, so weak-local categories go remote on purpose):
+Each task is first classified into one of the eight Track 1 capability categories, then routed down the cheapest path that still clears the accuracy gate (accuracy is a **gate** — officially 80% on a fixed 19-task set: below it a submission is excluded from the top of the leaderboard regardless of token count, so weak-local categories go remote on purpose):
 
 ```
 task ──▶ within-run dedup cache ──hit──▶ answer (0 tokens)

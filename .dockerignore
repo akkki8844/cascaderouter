@@ -5,6 +5,7 @@ logs/
 cache/
 eval_results/
 answers.jsonl
+harness_real_out.json
 .git/
 .venv/
 venv/

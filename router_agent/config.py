@@ -38,10 +38,15 @@ class RemoteModelConfig:
     base_url: str = "https://api.fireworks.ai/inference/v1"
     api_key_env: str = "FIREWORKS_API_KEY"
     # Tier order matters: cheapest first. Gemma first for the Gemma bonus prize.
-    # PLACEHOLDER ids — replace with the confirmed launch-day model list.
+    # Official Track 1 allowed list (organizer announcement, 2026-07-08),
+    # pre-ordered as order_tiers() would emit it. The harness-injected
+    # ALLOWED_MODELS always overrides this default.
     tiers: list = field(default_factory=lambda: [
-        "accounts/fireworks/models/gemma2-9b-it",
-        "accounts/fireworks/models/llama-v3p1-70b-instruct",
+        "accounts/fireworks/models/gemma-4-31b-it",
+        "accounts/fireworks/models/gemma-4-31b-it-nvfp4",
+        "accounts/fireworks/models/gemma-4-26b-a4b-it",
+        "accounts/fireworks/models/minimax-m3",
+        "accounts/fireworks/models/kimi-k2p7-code",
     ])
     max_tokens: int = 512
     temperature: float = 0.0

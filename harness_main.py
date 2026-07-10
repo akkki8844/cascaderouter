@@ -15,9 +15,10 @@ Runtime environment injected by the harness (never hardcoded):
                         (calls bypassing it are not recorded = zero tokens)
   ALLOWED_MODELS      — comma-separated permitted model ids (launch day)
 
-Budgets: container ready <60s, <30s per request, <10 min total runtime.
-Local models (Ollama inside this container) score as ZERO tokens; only
-Fireworks traffic counts. For local testing you can override the I/O paths:
+Budgets: container ready <60s, <30s per request, <10 min total runtime,
+grading environment 2 vCPU / 4 GB RAM (no Ollama pre-installed — ours is
+bundled in the image). Local models score as ZERO tokens; only Fireworks
+traffic counts, and the accuracy gate is 80% on a fixed 19-task set. For local testing you can override the I/O paths:
   TASKS_INPUT=eval/sample_input.json RESULTS_OUTPUT=out.json python harness_main.py
 """
 
@@ -38,8 +39,11 @@ from router_agent.task import task_from_raw
 INPUT_PATH = Path(os.environ.get("TASKS_INPUT", "/input/tasks.json"))
 OUTPUT_PATH = Path(os.environ.get("RESULTS_OUTPUT", "/output/results.json"))
 # The 10-minute cap is on the whole run; parallel tasks keep total wall time
-# down while each individual request stays under the 30s ceiling.
-MAX_WORKERS = int(os.environ.get("AGENT_MAX_WORKERS", "4"))
+# down while each individual request stays under the 30s ceiling. Default 2:
+# the published grading environment is 2 vCPU / 4 GB RAM (organizer
+# clarification, 2026-07-08) — more workers than cores just deepens the
+# CPU-bound Ollama queue and risks per-request timeouts while queued.
+MAX_WORKERS = int(os.environ.get("AGENT_MAX_WORKERS", "2"))
 
 
 def build_agent() -> RoutingAgent:

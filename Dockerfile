@@ -9,7 +9,10 @@
 # /output/results.json, exits 0/1. The harness injects FIREWORKS_API_KEY,
 # FIREWORKS_BASE_URL, and ALLOWED_MODELS at runtime — nothing is hardcoded.
 # Compressed image stays well under the 10GB cap (~4GB: two ~1GB models +
-# the Ollama runtime).
+# the Ollama runtime) — and under the organizers' revised ~5GB "comfortably
+# safe" guidance for avoiding intermittent PULL_ERRORs under scoring load.
+# Grading VM is 2 vCPU / 4 GB RAM with NO model runtime pre-installed, so
+# Ollama + weights being baked in below is a hard requirement, not a nicety.
 FROM python:3.11-slim
 
 RUN apt-get update \
