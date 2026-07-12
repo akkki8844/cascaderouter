@@ -1,0 +1,78 @@
+[
+  {
+    "task_id": "h01",
+    "answer": "Vatican City"
+  },
+  {
+    "task_id": "h02",
+    "answer": "Iron"
+  },
+  {
+    "task_id": "h03",
+    "answer": "1989"
+  },
+  {
+    "task_id": "h04",
+    "answer": "105"
+  },
+  {
+    "task_id": "h05",
+    "answer": "78"
+  },
+  {
+    "task_id": "h06",
+    "answer": "42"
+  },
+  {
+    "task_id": "h07",
+    "answer": "Ben"
+  },
+  {
+    "task_id": "h08",
+    "answer": "9"
+  },
+  {
+    "task_id": "h09",
+    "answer": "def fizzbuzz(n):\n    \"\"\"Return a FizzBuzz list for numbers 1 through n.\n\n    Multiples of 3 become 'Fizz', multiples of 5 become 'Buzz',\n    multiples of both become 'FizzBuzz', and all other numbers are\n    returned as their string representation.\n    \"\"\"\n    result = []\n    for i in range(1, n + 1):\n        if i % 15 == 0:\n            result.append(\"FizzBuzz\")\n        elif i % 3 == 0:\n            result.append(\"Fizz\")\n        elif i % 5 == 0:\n            result.append(\"Buzz\")\n        else:\n            result.append(str(i))\n    return result\n"
+  },
+  {
+    "task_id": "h10",
+    "answer": "from typing import List, Optional\n\ndef second_largest_unique(nums: List[int]) -> Optional[int]:\n    \"\"\"Return the second largest unique value in the list, or None if it doesn't exist.\"\"\"\n    unique_values = list(set(nums))\n    if len(unique_values) < 2:\n        return None\n    unique_values.sort()\n    return unique_values[-2]\n"
+  },
+  {
+    "task_id": "h11",
+    "answer": "The bug is that result starts at 0 and the loop multiplies by 0, so the product is always 0; it should start at 1 and iterate from 1 through n.\ndef factorial(n):\n    result = 1\n    for i in range(1, n + 1):\n        result *= i\n    return result"
+  },
+  {
+    "task_id": "h12",
+    "answer": "The bug is that `count + 1` computes a new value without assigning it back to `count` (it should be `count += 1`) and the function ignores uppercase vowels; here is the corrected code:\ndef count_vowels(s):\n    count = 0\n    for ch in s.lower():\n        if ch in 'aeiou':\n            count += 1\n    return count"
+  },
+  {
+    "task_id": "h13",
+    "answer": "Meteorologists have recorded the highest number of named Atlantic storms in a decade, prompting coastal cities to revise emergency budgets, expand evacuation signage, and coordinate with federal agencies on new early-warning systems to reduce last-minute chaos."
+  },
+  {
+    "task_id": "h14",
+    "answer": "Revenue grew 12% on enterprise renewals, but hardware declined and guidance was cut due to currency headwinds."
+  },
+  {
+    "task_id": "h15",
+    "answer": "June 5, 2023 (date); Satya Nadella (person); Build conference (conference); Seattle (location); Microsoft (organization); OpenAI (organization); Azure (service); Europe (location)"
+  },
+  {
+    "task_id": "h16",
+    "answer": "Elon Musk (person); SpaceX (organization); Falcon 9 (vehicle); Cape Canaveral (location); Friday (date); European Space Agency (organization)"
+  },
+  {
+    "task_id": "h17",
+    "answer": "negative"
+  },
+  {
+    "task_id": "h18",
+    "answer": "positive"
+  },
+  {
+    "task_id": "h19",
+    "answer": "7.5"
+  }
+]

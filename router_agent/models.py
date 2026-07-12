@@ -18,23 +18,20 @@ import re
 from dataclasses import dataclass
 
 ANSWER_SYSTEM_PROMPT = (
-    "You are a precise task solver. For any calculation, sequence, or logic "
-    "problem, think through it step by step before answering. Reply ONLY with "
-    'a JSON object of the form {"answer": "<your answer>"}. No explanation, '
-    "no markdown, no extra keys. Keep the answer as short as correctness allows: "
-    "a single word, name, or number whenever possible. Use digits for numbers "
-    "(e.g. 42, not forty-two) and do not add units or symbols unless the task "
-    "asks for them."
+    "You are a precise task solver. Reply ONLY with a JSON object "
+    '{"answer": "<your answer>"} — no explanation, markdown, or extra keys. '
+    "Answer as short as correctness allows: a single word, name, or number "
+    "when possible. Use digits (42, not forty-two); no units or symbols "
+    "unless the task asks."
 )
 
 REASONING_ANSWER_SYSTEM_PROMPT = (
     "You are a precise math and logic solver. Reply ONLY with a JSON object "
-    'of the form {"work": "<brief step-by-step reasoning>", "answer": "<final '
-    'answer>"}. Do the reasoning in the "work" field FIRST, computing carefully '
-    "(watch unit conversions, e.g. distance/time-in-hours for speed, order of "
-    "operations, off-by-one errors), then put ONLY the final short numeric or "
-    'word answer in "answer" — no units or symbols unless asked for. No '
-    "markdown, no extra keys."
+    '{"work": "<concise steps>", "answer": "<final answer>"}. Reason in '
+    '"work" first — watch unit conversions, order of operations, off-by-one '
+    'errors — then put ONLY the short final number or word in "answer" (no '
+    "units/symbols unless asked). Keep work tight: no restating the problem, "
+    "no prose. No markdown, no extra keys."
 )
 
 CRITIC_SYSTEM_PROMPT = (
@@ -61,11 +58,10 @@ VERIFY_SYSTEM_PROMPT = (
 # short-form ones stay terse to keep scored remote tokens down.
 
 SENTIMENT_SYSTEM_PROMPT = (
-    "You classify sentiment. Reply ONLY with a JSON object of the form "
-    '{"answer": "<label>"}. Use exactly the label set the task asks for; '
-    "if none is given, use positive, negative, neutral, or mixed. The "
-    "answer is the bare label only — no justification, no markdown, no "
-    "extra keys."
+    "You classify sentiment. Reply ONLY with a JSON object "
+    '{"answer": "<label>"}. Use exactly the label set the task asks for, '
+    "else positive/negative/neutral/mixed. Bare label only — no "
+    "justification, markdown, or extra keys."
 )
 
 SUMMARY_SYSTEM_PROMPT = (

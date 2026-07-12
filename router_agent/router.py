@@ -312,13 +312,16 @@ class RoutingAgent:
             # Reasoning-channel models (minimax-m3, gemma4-class) burn budget
             # on hidden reasoning before the JSON content — too small a
             # max_tokens returns 200 OK with EMPTY content (observed on
-            # r42/r44 at 320 tokens). 2000 keeps hard multi-step problems
-            # from truncating; usage bills actual tokens, not the cap.
+            # r42/r44 at 320 tokens). 1200 still clears the hardest multi-step
+            # problems in our grading-style set without truncating (validated
+            # 19/19), while capping any run-away chain sooner than the old
+            # 2000. temp 0.3 keeps the reasoning direct rather than rambling;
+            # usage bills actual tokens, not the cap.
             try:
                 resp = self._remote.chat(model, REASONING_ANSWER_SYSTEM_PROMPT,
                                          task.prompt,
-                                         max_tokens=max(self.cfg.remote.max_tokens, 2000),
-                                         temperature=0.5)
+                                         max_tokens=max(self.cfg.remote.max_tokens, 1200),
+                                         temperature=0.3)
             except Exception:
                 answers.append("")  # failed vote counts as blank, not fatal
                 continue
