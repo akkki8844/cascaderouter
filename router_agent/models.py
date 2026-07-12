@@ -62,10 +62,10 @@ VERIFY_SYSTEM_PROMPT = (
 
 SENTIMENT_SYSTEM_PROMPT = (
     "You classify sentiment. Reply ONLY with a JSON object of the form "
-    '{"answer": "<label>: <one short justification clause>"}. Use the label '
-    "set the task asks for; if none is given, use positive, negative, "
-    "neutral, or mixed. Always include the brief justification after the "
-    "label. No markdown, no extra keys."
+    '{"answer": "<label>"}. Use exactly the label set the task asks for; '
+    "if none is given, use positive, negative, neutral, or mixed. The "
+    "answer is the bare label only — no justification, no markdown, no "
+    "extra keys."
 )
 
 SUMMARY_SYSTEM_PROMPT = (
@@ -124,12 +124,19 @@ def extract_json_field(raw: str, *fields: str):
     emit valid JSON — never crash the pipeline over formatting.
     """
     text = raw.strip()
+    # reasoning models (minimax-m3 class) may prepend a <think>...</think>
+    # block whose braces would confuse the JSON-span regex — drop it first
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
     # strip markdown fences if present
     text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.MULTILINE).strip()
     candidates = [text]
     match = re.search(r"\{.*\}", text, flags=re.DOTALL)
     if match and match.group(0) != text:
         candidates.append(match.group(0))
+    # last flat JSON object in the text (reasoning prose often precedes it)
+    tail = re.findall(r"\{[^{}]*\}", text, flags=re.DOTALL)
+    if tail and tail[-1] not in candidates:
+        candidates.append(tail[-1])
     for candidate in candidates:
         try:
             obj = json.loads(candidate)

@@ -1,0 +1,21 @@
+[
+  {"task_id": "h01", "prompt": "What is the smallest country in the world by area?"},
+  {"task_id": "h02", "prompt": "Which element has the atomic number 26?"},
+  {"task_id": "h03", "prompt": "In what year did the Berlin Wall fall?"},
+  {"task_id": "h04", "prompt": "A train travels 240 km in 2.5 hours, then 180 km in 1.5 hours. What is its average speed for the whole journey in km/h?"},
+  {"task_id": "h05", "prompt": "Calculate 15% of 340, then subtract 12 and multiply the result by 2."},
+  {"task_id": "h06", "prompt": "What is the next number in the sequence: 2, 6, 12, 20, 30, ...?"},
+  {"task_id": "h07", "prompt": "Anna is taller than Ben. Ben is taller than Carl. Dana is shorter than Carl. Who is the second tallest?"},
+  {"task_id": "h08", "prompt": "A farmer has 17 sheep. All but 9 run away. How many sheep does the farmer have left?"},
+  {"task_id": "h09", "prompt": "Write a Python function called fizzbuzz(n) that returns a list of strings for numbers 1 to n, where multiples of 3 are 'Fizz', multiples of 5 are 'Buzz', multiples of both are 'FizzBuzz', and other numbers are the number as a string."},
+  {"task_id": "h10", "prompt": "Write a Python function that takes a list of integers and returns the second largest unique value, or None if it doesn't exist."},
+  {"task_id": "h11", "prompt": "This Python function should return the factorial of n but it's buggy. Fix it:\ndef factorial(n):\n    result = 0\n    for i in range(n):\n        result *= i\n    return result"},
+  {"task_id": "h12", "prompt": "This code is supposed to count vowels in a string but doesn't work correctly. Fix it:\ndef count_vowels(s):\n    count = 0\n    for ch in s:\n        if ch in 'aeiou':\n            count + 1\n    return count"},
+  {"task_id": "h13", "prompt": "Summarize the following in one sentence: Despite early forecasts predicting a mild storm season, meteorologists have now recorded the highest number of named Atlantic storms in a decade, prompting coastal cities to revise their emergency budgets, expand evacuation route signage, and coordinate with federal agencies on new early-warning systems that officials hope will reduce the kind of last-minute chaos seen in previous years."},
+  {"task_id": "h14", "prompt": "Summarize in no more than 15 words: The quarterly earnings report showed revenue growth of 12 percent year over year, driven primarily by strong subscription renewals in the enterprise segment, although hardware sales declined for the third consecutive quarter and the company lowered its full-year guidance citing currency headwinds."},
+  {"task_id": "h15", "prompt": "Extract all named entities and their types from this text: On June 5, 2023, Satya Nadella announced at the Build conference in Seattle that Microsoft would partner with OpenAI to expand Azure services across Europe."},
+  {"task_id": "h16", "prompt": "Identify the people, organizations, locations, and dates in: Elon Musk's SpaceX launched a Falcon 9 rocket from Cape Canaveral on Friday, carrying satellites for the European Space Agency."},
+  {"task_id": "h17", "prompt": "What is the sentiment of this review, positive or negative? 'I really wanted to love this restaurant given all the hype, but the service was painfully slow and my pasta arrived cold. The dessert was decent, I suppose.'"},
+  {"task_id": "h18", "prompt": "Classify the sentiment of this tweet as positive, negative, or neutral: 'Just got upgraded to first class on my flight home for the holidays. Best surprise ever!'"},
+  {"task_id": "h19", "prompt": "If a clock shows 3:15, what is the angle in degrees between the hour and minute hands?"}
+]

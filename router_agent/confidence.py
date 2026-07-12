@@ -107,19 +107,21 @@ def classify_category(prompt: str) -> str:
     """Map a task to one of the eight Track 1 capability categories.
 
     Returns one of: code_debugging, code_generation, summarization, ner,
-    sentiment, math, logic, factual. Order matters — code is checked first
-    because code snippets are full of arithmetic operators that would
-    otherwise trip the math detector, and summarization/NER prompts embed
-    arbitrary passage text that can contain anything.
+    sentiment, math, logic, factual. Order matters: sentiment/summarization
+    are checked before code because everyday passages trip the code markers
+    ("upgraded to first CLASS" tripped the class-keyword regex on the eval,
+    h18), while sentiment/summary instruction verbs almost never appear in
+    genuine code tasks. Code is still checked before math/logic because code
+    snippets are full of arithmetic operators.
     """
+    if _SENTIMENT_MARKER.search(prompt):
+        return "sentiment"
+    if _SUMMARY_MARKER.search(prompt):
+        return "summarization"
     if _CODE_MARKER.search(prompt):
         if _DEBUG_MARKER.search(prompt):
             return "code_debugging"
         return "code_generation"
-    if _SUMMARY_MARKER.search(prompt):
-        return "summarization"
-    if _SENTIMENT_MARKER.search(prompt):
-        return "sentiment"
     if _NER_MARKER.search(prompt):
         return "ner"
     if _LOGIC_MARKER.search(prompt):

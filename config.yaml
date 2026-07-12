@@ -38,7 +38,10 @@ remote:
   tiers:
     - gemma4:latest
     - gemma:latest
-  max_tokens: 320
+  # v4: generous cap — reasoning-channel models return blank content when
+  # truncated, and a blank answer is a guaranteed zero. Usage bills actual
+  # generated tokens, not this cap.
+  max_tokens: 800
   temperature: 0.0
 
 router:

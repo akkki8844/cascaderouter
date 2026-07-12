@@ -1,11 +1,20 @@
 """The Tiered Calibrated Cascade router (03_ARCHITECTURE).
 
-Route order (strategy: cascade, the target v3 submission):
-  1. semantic cache        -> hit: return, 0 tokens
-  2. dual local models     -> agree: return, 0 tokens
-  3. local critique        -> confident verdict: return, 0 tokens
-  4. remote tier 1 (Gemma) -> verify-or-fix the best local draft
-  5. remote tier 2         -> only if tier 1 signals it could not verify
+Route order (strategy: cascade, v4 accuracy-first revision):
+  1. within-run dedup cache      -> hit: return, 0 tokens
+  2. category classifier         -> pick the remote plan per category:
+     - math / logic              -> cross-family self-consistency vote
+     - code gen / debug          -> strongest code model, single call
+     - sentiment / summarization -> Gemma-first, single call
+     - factual / NER             -> strongest general model, single call
+  3. local models                -> emergency fallback ONLY (all remote
+                                    tiers failed or returned blank)
+
+Why no free local answering tier anymore: the real grading run (2026-07-11)
+scored 57.9% (gate: 80%) because two 1B-class local models confidently
+agreed on wrong answers on nearly half the tasks. Tokens saved below the
+accuracy gate score zero — accuracy buys placement, tokens only break ties
+among gate-passers.
 
 Also implements the fallback strategies from 02_MVP_PLAN so every stage of
 the build is submittable: always_remote (v0), always_local (v1),
@@ -53,10 +62,10 @@ from .task import Task
 # completeness is exactly what a critic can't check, so local trust signals
 # don't apply.
 _LONGFORM = {
-    "code_generation": (CODEGEN_SYSTEM_PROMPT, 900),
-    "code_debugging": (CODEDEBUG_SYSTEM_PROMPT, 900),
-    "summarization": (SUMMARY_SYSTEM_PROMPT, 400),
-    "ner": (NER_SYSTEM_PROMPT, 300),
+    "code_generation": (CODEGEN_SYSTEM_PROMPT, 2000),
+    "code_debugging": (CODEDEBUG_SYSTEM_PROMPT, 2000),
+    "summarization": (SUMMARY_SYSTEM_PROMPT, 800),
+    "ner": (NER_SYSTEM_PROMPT, 800),
 }
 
 # Category -> system prompt for the short-answer local tier. Anything not
@@ -153,6 +162,18 @@ class RoutingAgent:
         return decision
 
     def _cascade(self, task: Task) -> Decision:
+        """v4 accuracy-first cascade.
+
+        The real 19-task grading run (scored 2026-07-11) came back 57.9% —
+        below the 80% accuracy gate, which zeroes the submission regardless
+        of token count. Root cause: the free dual-local-agreement tier (two
+        1–1.5B models) answered ~46% of tasks and was only reliable on the
+        toy-easy proxy set, and self-consistency voted with three Gemma
+        variants (correlated errors). Below the gate, saved tokens are worth
+        nothing, so v4 routes EVERY graded category to a strong remote model
+        (category-matched, cross-family voting for math/logic) and demotes
+        the local models to an emergency fallback when all remote tiers fail.
+        """
         features: dict = {}
 
         # 1. cache (within-run dedup only in harness mode — see cache.py)
@@ -162,14 +183,6 @@ class RoutingAgent:
                             remote_tokens=0, local_tokens=0, latency_s=0.0,
                             features={"cache_hit": True})
 
-        # 1.5 capability-category dispatch (the eight Track 1 categories).
-        #  - math/logic bypass local-agreement trust: small local models can
-        #    confidently agree on the same wrong answer (correlated errors),
-        #    so agreement isn't a valid free-tier signal — go straight to
-        #    remote self-consistency voting.
-        #  - code/summarization/NER skip the cascade: one remote call with a
-        #    category-tuned prompt (see _LONGFORM for the per-category why).
-        #  - factual/sentiment stay on the free dual-local path.
         category = classify_category(task.prompt)
         features["category"] = category
         if category in ("math", "logic"):
@@ -177,91 +190,39 @@ class RoutingAgent:
         if category in _LONGFORM:
             return self._remote_longform(task, category, features)
 
-        # 2. dual local models (both free)
-        local_prompt = _LOCAL_PROMPTS.get(category, ANSWER_SYSTEM_PROMPT)
-        try:
-            resp_a = self._local_chat(self._local_a, self.cfg.local.model_a,
-                                      local_prompt, task.prompt)
-            resp_b = self._local_chat(self._local_b, self.cfg.local.model_b,
-                                      local_prompt, task.prompt)
-        except Exception as exc:
-            # Local tier unreachable/failed (e.g. Ollama not up in the judge
-            # VM) — never fail the task over the free tier: answer remote.
-            features["local_error"] = str(exc)[:200]
-            return self._remote_single(task, local_prompt, "remote_fallback",
-                                       features)
-        ans_a = str(extract_json_field(resp_a.text, "answer")
-                    or resp_a.text.strip())
-        ans_b = str(extract_json_field(resp_b.text, "answer")
-                    or resp_b.text.strip())
-        local_tokens = resp_a.total_tokens + resp_b.total_tokens
+        # factual / sentiment: one short remote call to the strongest general
+        # model. Completion is a few tokens; the accuracy delta over a 1B
+        # local model is the whole ballgame.
+        system = _LOCAL_PROMPTS.get(category, ANSWER_SYSTEM_PROMPT)
+        return self._remote_single(task, system, f"remote_{category}",
+                                   features, max_tokens=800,
+                                   category=category)
 
-        agree, similarity = answers_agree(
-            ans_a, ans_b, self.cfg.router.agreement_fuzzy_threshold)
-        features.update({"agreement": agree, "similarity": round(similarity, 3),
-                         "prompt_chars": len(task.prompt)})
+    # ---------- model-role selection ----------
 
-        if agree:
-            self.cache.store(task.prompt, ans_a)
-            return Decision(task.id, task.prompt, "local_agreement", ans_a,
-                            remote_tokens=0, local_tokens=local_tokens,
-                            latency_s=0.0, features=features)
+    def _tier_order(self, category: str | None) -> list[str]:
+        """Order the allowed models best-first for a category.
 
-        # 3. local critique (still free)
-        draft = ans_a
-        if self.cfg.router.critique_enabled:
-            critic_user = (
-                f"Task: {task.prompt}\n\n"
-                f"Candidate A: {ans_a}\n"
-                f"Candidate B: {ans_b}")
-            try:
-                crit = self._local_chat(self._critic,
-                                        self.cfg.local.critic_model,
-                                        CRITIC_SYSTEM_PROMPT, critic_user)
-            except Exception as exc:
-                crit = None
-                features["critic_error"] = str(exc)[:200]
-            if crit is not None:
-                local_tokens += crit.total_tokens
-                verdict, conf = extract_json_field(crit.text,
-                                                   "verdict", "confidence")
-                features.update({"critique_verdict": verdict,
-                                 "critique_confidence": conf})
-                if verdict in ("A", "B"):
-                    draft = ans_a if verdict == "A" else ans_b
-                    if str(conf).lower() == "high":
-                        self.cache.store(task.prompt, draft)
-                        return Decision(task.id, task.prompt, "local_critique",
-                                        draft, remote_tokens=0,
-                                        local_tokens=local_tokens,
-                                        latency_s=0.0, features=features)
+        kimi-k2p7-code is the strongest general instruct model on the allowed
+        list (and the obvious first choice for code); minimax-m3 is the
+        reasoning model; the Gemma checkpoints lead the categories a 31B
+        instruct model is near-certain on (sentiment, summarization) so the
+        submission keeps genuine Gemma usage for the bonus prize without
+        betting the accuracy gate on it.
+        """
+        tiers = list(self.cfg.remote.tiers)
 
-        # 4/5. remote verify-not-regenerate, tiered (Gemma first)
-        verify_user = f"Task: {task.prompt}\n\nDraft answer: {draft}"
-        remote_tokens = 0
-        answer = draft
-        route = "remote_tier1"
-        for i, tier_model in enumerate(self.cfg.remote.tiers):
-            try:
-                resp = self._remote_chat(tier_model, VERIFY_SYSTEM_PROMPT,
-                                         verify_user)
-            except Exception as exc:
-                features[f"tier{i + 1}_error"] = str(exc)[:200]
-                continue  # next tier; worst case we keep the local draft
-            remote_tokens += resp.total_tokens
-            correct, fixed = extract_json_field(resp.text, "correct", "answer")
-            route = f"remote_tier{i + 1}"
-            if fixed:
-                answer = str(fixed)
-            if correct is not None:  # tier gave a usable verdict -> stop
-                features[f"tier{i + 1}_verdict"] = bool(correct)
-                break
-            # verdict unparseable -> try next tier, if any
+        def bump(*subs: str) -> list[str]:
+            hits = [m for m in tiers if any(s in m.lower() for s in subs)]
+            rest = [m for m in tiers if m not in hits]
+            return (hits + rest) if hits else tiers
 
-        self.cache.store(task.prompt, answer)
-        return Decision(task.id, task.prompt, route, answer,
-                        remote_tokens=remote_tokens, local_tokens=local_tokens,
-                        latency_s=0.0, features=features)
+        if category in ("code_generation", "code_debugging"):
+            return bump("code", "kimi")
+        if category in ("sentiment", "summarization"):
+            return bump("gemma")
+        # factual, ner, math/logic votes, generic fallback
+        return bump("kimi", "code")
 
     def _remote_longform(self, task: Task, category: str,
                          features: dict) -> Decision:
@@ -274,16 +235,19 @@ class RoutingAgent:
         """
         system, budget = _LONGFORM[category]
         return self._remote_single(task, system, f"remote_{category}",
-                                   features, max_tokens=budget)
+                                   features, max_tokens=budget,
+                                   category=category)
 
     def _remote_single(self, task: Task, system: str, route: str,
-                       features: dict, max_tokens: int | None = None) -> Decision:
-        """One remote generation on tier 1, falling back through the tier
-        list if a call fails. Used for long-form categories and as the
-        safety net when the local tier is unreachable."""
+                       features: dict, max_tokens: int | None = None,
+                       category: str | None = None) -> Decision:
+        """One remote generation, escalating through the category-ordered
+        tier list on failure OR on an empty extracted answer (a truncated
+        reasoning channel can return 200 OK with blank content — an empty
+        answer is a guaranteed zero, so it must never be final)."""
         remote_tokens = 0
         answer = ""
-        for i, tier_model in enumerate(self.cfg.remote.tiers):
+        for i, tier_model in enumerate(self._tier_order(category)):
             try:
                 resp = self._remote.chat(
                     tier_model, system, task.prompt,
@@ -296,39 +260,64 @@ class RoutingAgent:
             answer = str(extract_json_field(resp.text, "answer")
                          or resp.text.strip())
             if answer:
+                features["model"] = tier_model
                 break
+        if not answer:
+            answer = self._local_last_resort(task, system, features)
+            route += "_local_fallback"
         self.cache.store(task.prompt, answer)
         return Decision(task.id, task.prompt, route, answer,
                         remote_tokens=remote_tokens, local_tokens=0,
                         latency_s=0.0, features=features)
 
+    def _local_last_resort(self, task: Task, system: str,
+                           features: dict) -> str:
+        """Free local draft, used ONLY when every remote tier failed or came
+        back blank — a plausible local answer beats a certain-zero blank."""
+        try:
+            resp = self._local_chat(self._local_a, self.cfg.local.model_a,
+                                    system, task.prompt)
+            return str(extract_json_field(resp.text, "answer")
+                       or resp.text.strip())
+        except Exception as exc:
+            features["local_fallback_error"] = str(exc)[:200]
+            return ""
+
     def _remote_self_consistency(self, task: Task) -> Decision:
-        """Fresh-generate across remote tiers at temperature>0 and take the
-        majority vote. Sampling the SAME model repeatedly only catches random
-        slips — a systematic reasoning bias in that model gets reproduced by
-        every sample. Spreading votes across independently-trained remote
-        models (Gemma + Llama3) catches cases where one model is confidently,
-        consistently wrong (03_ARCHITECTURE §3 revision)."""
-        tiers = self.cfg.remote.tiers
-        # 3 votes from tier0 (the stronger primary model), 1 from tier1, so
-        # a genuine capability gap between tiers doesn't tie 2-2 -- tier0 is
-        # trusted more, tier1 only needed to catch tier0-specific mistakes.
-        # Early stop: if the first two tier0 votes already agree on a
-        # non-blank answer, further votes almost never flip the majority --
-        # skip them and save ~half the remote tokens on easy math.
-        tier1 = tiers[1] if len(tiers) > 1 else tiers[0]
-        plan = [tiers[0], tiers[0], tiers[0], tier1]
+        """Cross-FAMILY majority vote for math/logic.
+
+        Sampling the same model (or the same weights re-quantized) repeatedly
+        only catches random slips — a systematic reasoning bias reproduces in
+        every sample, which is exactly what sank the Gemma-only vote plan on
+        the real grading run. v4 votes with genuinely independent models:
+        the strongest general instruct model, the dedicated reasoning model,
+        then a Gemma checkpoint as tie-breaker. Early stop when the first two
+        families agree on a non-blank answer (2-of-2 cross-family agreement
+        is a stronger signal than 3-of-3 same-family ever was)."""
+        general = self._tier_order(None)  # kimi-first
+        reasoning = [m for m in self.cfg.remote.tiers
+                     if any(s in m.lower() for s in ("minimax", "m3", "r1"))]
+        gemma = [m for m in self.cfg.remote.tiers if "gemma" in m.lower()]
+        plan = [general[0]]
+        if reasoning and reasoning[0] != plan[0]:
+            plan.append(reasoning[0])
+        elif len(general) > 1:
+            plan.append(general[1])
+        plan.append(gemma[0] if gemma else general[0])
+        plan.append(general[0])  # 4th vote breaks a 1-1-1 split toward kimi
+
         answers: list[str] = []
         remote_tokens = 0
         for i, model in enumerate(plan):
-            # gemma4/qwen3-class models emit a hidden 'reasoning' channel
-            # before the JSON content -- too small a budget lets reasoning
-            # consume the whole response and leaves content empty (observed:
-            # 320 tokens produced empty votes on r42/r44; 900+ is reliable).
+            # Reasoning-channel models (minimax-m3, gemma4-class) burn budget
+            # on hidden reasoning before the JSON content — too small a
+            # max_tokens returns 200 OK with EMPTY content (observed on
+            # r42/r44 at 320 tokens). 2000 keeps hard multi-step problems
+            # from truncating; usage bills actual tokens, not the cap.
             try:
                 resp = self._remote.chat(model, REASONING_ANSWER_SYSTEM_PROMPT,
                                          task.prompt,
-                                         max_tokens=max(self.cfg.remote.max_tokens, 900),
+                                         max_tokens=max(self.cfg.remote.max_tokens, 2000),
                                          temperature=0.5)
             except Exception:
                 answers.append("")  # failed vote counts as blank, not fatal
@@ -341,11 +330,15 @@ class RoutingAgent:
                 if agree and normalize_answer(answers[0]):
                     break
         answer = majority_vote(answers)
+        if not normalize_answer(answer):
+            answer = self._local_last_resort(
+                task, REASONING_ANSWER_SYSTEM_PROMPT, {})
         self.cache.store(task.prompt, answer)
         return Decision(task.id, task.prompt, "remote_self_consistency",
                         answer, remote_tokens=remote_tokens, local_tokens=0,
                         latency_s=0.0,
-                        features={"computational": True, "votes": answers})
+                        features={"computational": True, "votes": answers,
+                                  "vote_models": plan[:len(answers)]})
 
     # ---------- plumbing ----------
 

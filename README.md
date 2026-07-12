@@ -2,18 +2,9 @@
 
 **AMD Developer Hackathon: ACT II — Track 1** · Team: **Veritas**
 
-An AI agent that completes tasks using the **cheapest possible path**: two free local models vote first, and only tasks they can't confidently resolve pay for a remote call via **Fireworks AI** (Gemma tier first). Local tokens score as **zero** on the Track 1 leaderboard — so the agent's job is to know when it doesn't need the expensive model.
+An AI agent that routes every task to the **allowed model best suited to its category** — code models for code, cross-family reasoning votes for math/logic, Gemma for sentiment/summarization — spending remote tokens exactly where they buy accuracy, and nowhere else. Track 1's accuracy threshold is a hard gate: a cheap-but-wrong submission scores nothing, so the router is accuracy-first by design (v4; the v3 free-local-first cascade scored 57.9% on the real grading run and taught us that lesson empirically).
 
-**Internal validation on real models (our own 50-task proxy set, no mocks): 100% accuracy, 16,730 remote tokens, 23/50 tasks resolved at $0.** See `AMDPLAN/IMPLEMENTATION.md` for the full build record and `AMDPLAN/RUN.md` for a copy-paste run guide.
-
-| Strategy | Accuracy | Remote tokens | Free resolution |
-|---|---|---|---|
-| always_local | 78% | 0 | 50/50 |
-| heuristic | 80% | 1,572 | 39/50 |
-| always_remote | 96% | 7,383 | 0/50 |
-| **cascade (this design)** | **100%** | 16,730 | 23/50 |
-
-Cascade is the only strategy reaching 100% — single-shot remote misses the trap logic puzzles that need multi-vote reasoning.
+**Internal validation on real Fireworks models (19-task set mirroring the grading distribution, no mocks): 19/19 correct, 8,822 remote tokens, 27 s wall time** (`eval_results/hard_v4b_decisions.jsonl`). See `AMDPLAN/IMPLEMENTATION.md` for the full build record and `AMDPLAN/RUN.md` for a copy-paste run guide.
 
 ## The submission contract (Participant Guide compliance)
 
@@ -35,7 +26,7 @@ Budgets honored: container ready < 60 s (Ollama starts in ~2 s, models are pre-b
 
 ## How it works
 
-Each task is first classified into one of the eight Track 1 capability categories, then routed down the cheapest path that still clears the accuracy gate (accuracy is a **gate** — officially 80% on a fixed 19-task set: below it a submission is excluded from the top of the leaderboard regardless of token count, so weak-local categories go remote on purpose):
+Each task is first classified into one of the eight Track 1 capability categories, then routed to the model best suited to that category. Accuracy is a **gate** — officially 80% on a fixed 19-task set: below it a submission scores nothing regardless of token count. The v4 router is therefore *accuracy-first*: every graded answer comes from a strong remote model, with the local models kept only as an emergency fallback, and tokens are saved through category-matched single calls, early-stop voting, and terse structured output rather than through free-but-unreliable local answering.
 
 ```
 task ──▶ within-run dedup cache ──hit──▶ answer (0 tokens)
@@ -43,39 +34,31 @@ task ──▶ within-run dedup cache ──hit──▶ answer (0 tokens)
               ▼
       category classifier (8 Track 1 categories)
               │
-    ┌─────────┼──────────────────────────────┐
-    │         │                              │
-factual /   math / logic              code gen / code debug /
-sentiment     │                       summarization / NER
-    │         ▼                              │
-    │   remote self-consistency              ▼
-    │   (up to 4 reasoning votes,     single remote call,
-    │    early-stop when the first    category-tuned prompt
-    │    two agree)                   (completeness/long-form)
-    ▼
-Local Model A ─┐
-               ├─ agree? ──yes──▶ answer (0 tokens)
-Local Model B ─┘
-    │ disagree
-    ▼
-Local critique pass ──confident──▶ answer (0 tokens)
-    │ unresolved
-    ▼
-Fireworks remote, tier 1 (Gemma): "verify or FIX this draft"
-    │ unusable verdict
-    ▼
-Fireworks remote, tier 2: next allowed model
+    ┌─────────┼──────────────────┬────────────────────────┐
+    │         │                  │                        │
+math / logic  code gen /         sentiment /              factual / NER
+    │         code debug         summarization                │
+    ▼         │                  │                            ▼
+cross-family  ▼                  ▼                     single call,
+self-consistency: strongest code model  Gemma-first    strongest general
+strongest general (kimi-k2p7-code),     single call    model, terse
++ reasoning model  single call,         (Gemma bonus   category prompt
++ Gemma vote;      category-tuned       prize; strong
+early-stop when    prompt               models behind
+first two agree                         it if it fails)
+              │ (any tier fails or returns blank)
+              ▼
+   next allowed model … ▶ local models (last resort — never return blank)
 ```
 
 Key techniques (see `AMDPLAN/03_ARCHITECTURE.md` for the full design rationale):
 
-- **Category-aware routing** — the eight competition categories map to three route families. Factual/sentiment stay on the free local tier; math/logic get remote self-consistency voting; code, summarization, and NER get one remote call with a category-tuned prompt (code/summaries because string-agreement between two local models is meaningless on long-form text; NER because it's graded on *completeness*, which a local critic can't verify — validated: a 1B local dropped an entity and the critic confidently approved it).
-- **Dual-local-model agreement** — two small models from different training lineages (Llama 3.2 + Qwen2.5) vote; agreement is a far stronger free confidence signal than any single model's self-rating.
-- **Computational bypass** — math/logic prompts skip local agreement entirely: small models fail arithmetic in *correlated* ways (they agree on the same wrong answer), so agreement is not a valid signal there.
-- **Verify-not-regenerate escalation** — the remote model is sent our local draft and asked to confirm/fix it, not re-answer from scratch. Confirm/fix responses are shorter → fewer scored tokens.
-- **Structured JSON output on every tier** — no preamble or filler tokens, ever, local or remote.
-- **Early-stop self-consistency** — up to 4 reasoning votes, stopped after 2 when they agree (−37% remote tokens at unchanged accuracy in our validation).
-- **Calibrated escalation threshold** — fit against our own eval logs (`eval/calibrate.py`), not hand-picked.
+- **Category-aware model selection** — each of the eight competition categories is answered by the allowed model best suited to it: `kimi-k2p7-code` for code generation/debugging and general short answers, cross-family voting for math/logic, Gemma-4 checkpoints leading sentiment and summarization.
+- **Cross-family self-consistency** — math/logic votes come from *independently trained* models (general instruct + dedicated reasoning model + Gemma), because repeated samples of one model family reproduce that family's systematic biases. Early stop when the first two families agree (2-of-2 cross-family agreement is stronger than any same-family majority, and ~40% cheaper).
+- **Never-blank guarantee** — reasoning-channel models can return HTTP 200 with empty content when truncated; an empty answer is a guaranteed zero. Every route escalates through the remaining allowed models on failure *or* blank output, ending at the bundled local models as a last resort.
+- **Structured JSON output on every tier** — no preamble or filler tokens, ever; short-form categories answer with a bare label/number/name.
+- **Within-run dedup cache** — repeated prompts inside one grading run are answered once (exact-match, in-memory only; nothing is precomputed or persisted).
+- **Lesson learned the hard way** — v3 answered ~46% of tasks with free 1B-class local models and scored 57.9% on the real grading run: below the gate, every saved token was worth nothing. v4 spends tokens where they buy accuracy.
 
 ## Build & push the submission image
 

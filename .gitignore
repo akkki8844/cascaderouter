@@ -7,6 +7,8 @@ cache/
 eval_results/*
 !eval_results/eval_cascade_20260706T192415Z.json
 !eval_results/eval_cascade_20260706T192415Z.md
+!eval_results/hard_v4b_out.json
+!eval_results/hard_v4b_decisions.jsonl
 answers.jsonl
 harness_real_out.json
 harness_input/
