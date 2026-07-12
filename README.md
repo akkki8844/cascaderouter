@@ -4,7 +4,7 @@
 
 An AI agent that routes every task to the **allowed model best suited to its category** — code models for code, cross-family reasoning votes for math/logic, Gemma for sentiment/summarization — spending remote tokens exactly where they buy accuracy, and nowhere else. Track 1's accuracy threshold is a hard gate: a cheap-but-wrong submission scores nothing, so the router is accuracy-first by design (v4; the v3 free-local-first cascade scored 57.9% on the real grading run and taught us that lesson empirically).
 
-**Internal validation on real Fireworks models (19-task set mirroring the grading distribution, no mocks): 19/19 correct, 8,822 remote tokens, 27 s wall time** (`eval_results/hard_v4b_decisions.jsonl`). See `AMDPLAN/IMPLEMENTATION.md` for the full build record and `AMDPLAN/RUN.md` for a copy-paste run guide.
+**Internal validation on real Fireworks models (19-task set mirroring the grading distribution, no mocks): 19/19 correct, 8,618 remote tokens, 32 s wall time** (`eval_results/hard_v4c_decisions.jsonl`). See `AMDPLAN/IMPLEMENTATION.md` for the full build record and `AMDPLAN/RUN.md` for a copy-paste run guide.
 
 ## The submission contract (Participant Guide compliance)
 

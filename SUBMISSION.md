@@ -56,10 +56,10 @@ tasks on a worker pool with 25 s per-request timeouts, and degrades gracefully
 batch).
 
 Validation on the real Fireworks API, on a 19-task set mirroring the grading
-distribution: **19/19 correct, 8,822 remote tokens, 27 s wall time** — including
+distribution: **19/19 correct, 8,618 remote tokens, 32 s wall time** — including
 a live demonstration of the escalation ladder recovering through three
 unavailable model tiers without losing a single answer (receipts committed in
-`eval_results/hard_v4b_*`).
+`eval_results/hard_v4c_*`).
 
 ## Technology & Category Tags
 
@@ -87,7 +87,7 @@ unavailable model tiers without losing a single answer (receipts committed in
 3. **(0:50–1:20) Demo** — run the harness on the 19-task eval set, show
    `results.json` appearing in 27 seconds and the per-task decision log:
    category, model chosen, tokens per route.
-4. **(1:20–1:45) Receipts** — 19/19 correct at 8,822 tokens; the live
+4. **(1:20–1:45) Receipts** — 19/19 correct at 8,618 tokens; the live
    escalation log showing three unavailable tiers recovered without losing an
    answer; the classifier fix caught by evals ("first class" ≠ code).
    Engineering by measurement.
@@ -106,6 +106,6 @@ unavailable model tiers without losing a single answer (receipts committed in
    samples of one family; early-stop at first cross-family agreement.
 5. Reliability engineering — never-blank guarantee, escalation ladder proven
    live through three dead tiers, within-run dedup cache.
-6. Results — 19/19 correct · 8,822 tokens · 27 s on a grading-style set.
+6. Results — 19/19 correct · 8,618 tokens · 32 s on a grading-style set.
 7. Compliance — self-contained amd64 image, env contract, budgets, Gemma via
    Fireworks on sentiment/summarization.
