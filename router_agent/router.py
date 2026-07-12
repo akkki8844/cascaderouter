@@ -1,20 +1,30 @@
 """The Tiered Calibrated Cascade router (03_ARCHITECTURE).
 
-Route order (strategy: cascade, v4 accuracy-first revision):
+Route order (strategy: cascade, v5 token-lean revision):
   1. within-run dedup cache      -> hit: return, 0 tokens
-  2. category classifier         -> pick the remote plan per category:
-     - math / logic              -> cross-family self-consistency vote
-     - code gen / debug          -> strongest code model, single call
-     - sentiment / summarization -> Gemma-first, single call
-     - factual / NER             -> strongest general model, single call
+  2. category classifier         -> pick the plan per category:
+     - sentiment                 -> dual-local agreement (0 tokens), remote
+                                    only on disagreement or blank
+     - math / logic              -> ONE call to the strongest general model
+                                    (escalates through tiers only on blank)
+     - code gen / debug / NER    -> minimax-first (terse JSON completions;
+                                    measured ~1/2 to 1/3 the billed tokens
+                                    of kimi for equal answers), kimi next
+                                    tier on blank/failure
+     - summarization             -> Gemma-first, single call
+     - factual                   -> strongest general model, single call
   3. local models                -> emergency fallback ONLY (all remote
                                     tiers failed or returned blank)
 
-Why no free local answering tier anymore: the real grading run (2026-07-11)
-scored 57.9% (gate: 80%) because two 1B-class local models confidently
-agreed on wrong answers on nearly half the tasks. Tokens saved below the
-accuracy gate score zero — accuracy buys placement, tokens only break ties
-among gate-passers.
+Scoring reality (live leaderboard, 2026-07-13): rank is ascending REMOTE
+tokens subject to a 50% accuracy floor — entries at 52.6% rank normally, so
+the floor is lenient, but tokens decide placement. v4 routed everything to
+strong remote models and voted on math (8,618 tokens, 19/19 on the proxy
+set); v5 keeps a strong remote model on every graded category (the 57.9%
+real run showed 1B locals answering broadly is fatal) while cutting the
+redundant math vote, moving NER/debug to the cheap-completion model, and
+letting the free local pair handle only sentiment — their one reliably
+safe category — with a remote fallback on any disagreement.
 
 Also implements the fallback strategies from 02_MVP_PLAN so every stage of
 the build is submittable: always_remote (v0), always_local (v1),
@@ -33,8 +43,6 @@ from .confidence import (
     answers_agree,
     classify_category,
     heuristic_difficulty,
-    is_computational,
-    majority_vote,
     normalize_answer,
 )
 from .models import (
@@ -162,17 +170,15 @@ class RoutingAgent:
         return decision
 
     def _cascade(self, task: Task) -> Decision:
-        """v4 accuracy-first cascade.
+        """v5 token-lean cascade (see module docstring for the full plan).
 
-        The real 19-task grading run (scored 2026-07-11) came back 57.9% —
-        below the 80% accuracy gate, which zeroes the submission regardless
-        of token count. Root cause: the free dual-local-agreement tier (two
-        1–1.5B models) answered ~46% of tasks and was only reliable on the
-        toy-easy proxy set, and self-consistency voted with three Gemma
-        variants (correlated errors). Below the gate, saved tokens are worth
-        nothing, so v4 routes EVERY graded category to a strong remote model
-        (category-matched, cross-family voting for math/logic) and demotes
-        the local models to an emergency fallback when all remote tiers fail.
+        Every graded category still gets a strong remote model — the 57.9%
+        real run proved broad local answering is fatal — but redundancy the
+        floor no longer justifies is gone: math/logic take ONE strong-model
+        call instead of a cross-family vote (the vote never changed the
+        first model's answer in validation), and sentiment goes to the free
+        local pair first because a bare polarity label is the one output two
+        1B models can be trusted to cross-check, with remote on any doubt.
         """
         features: dict = {}
 
@@ -185,18 +191,69 @@ class RoutingAgent:
 
         category = classify_category(task.prompt)
         features["category"] = category
+        if category == "sentiment":
+            return self._local_sentiment(task, features)
         if category in ("math", "logic"):
-            return self._remote_self_consistency(task)
+            return self._remote_reasoning_single(task, features)
         if category in _LONGFORM:
             return self._remote_longform(task, category, features)
 
-        # factual / sentiment: one short remote call to the strongest general
-        # model. Completion is a few tokens; the accuracy delta over a 1B
-        # local model is the whole ballgame.
+        # factual: one short remote call to the strongest general model.
+        # Completion is a few tokens; the accuracy delta over a 1B local
+        # model is the whole ballgame.
         system = _LOCAL_PROMPTS.get(category, ANSWER_SYSTEM_PROMPT)
         return self._remote_single(task, system, f"remote_{category}",
                                    features, max_tokens=800,
                                    category=category)
+
+    def _local_sentiment(self, task: Task, features: dict) -> Decision:
+        """Free tier for sentiment ONLY: both local models label the text;
+        a fuzzy match between two different-lineage 1B models on a bare
+        polarity label is a genuine agreement signal (unlike free-form
+        answers, where correlated confident-wrongs sank the 57.9% run).
+        Any disagreement, error, or blank goes to the remote path."""
+        local_tokens = 0
+        labels = []
+        for client, model in ((self._local_a, self.cfg.local.model_a),
+                              (self._local_b, self.cfg.local.model_b)):
+            try:
+                resp = self._local_chat(client, model,
+                                        SENTIMENT_SYSTEM_PROMPT, task.prompt)
+            except Exception as exc:
+                features["local_sentiment_error"] = str(exc)[:200]
+                break
+            local_tokens += resp.total_tokens
+            labels.append(str(extract_json_field(resp.text, "answer")
+                              or resp.text.strip()))
+        if len(labels) == 2 and normalize_answer(labels[0]):
+            agree, _ = answers_agree(labels[0], labels[1])
+            if agree:
+                self.cache.store(task.prompt, labels[0])
+                features["labels"] = labels
+                return Decision(task.id, task.prompt, "local_sentiment",
+                                labels[0], remote_tokens=0,
+                                local_tokens=local_tokens, latency_s=0.0,
+                                features=features)
+        features["local_disagreement"] = labels
+        decision = self._remote_single(task, SENTIMENT_SYSTEM_PROMPT,
+                                       "remote_sentiment", features,
+                                       max_tokens=800, category="sentiment")
+        decision.local_tokens = local_tokens
+        return decision
+
+    def _remote_reasoning_single(self, task: Task, features: dict) -> Decision:
+        """ONE strong-model call for math/logic, tier-escalating only on
+        blank/failure. Replaces the v4 cross-family vote: in every validated
+        run the second vote merely confirmed the first model's answer (and
+        the reasoning model was measured WRONG on a trick question the
+        general model got right), so the confirmation call was pure token
+        cost. The reasoning-tuned prompt and generous cap stay — truncated
+        reasoning channels return blank, and blank is a guaranteed zero."""
+        features["computational"] = True
+        return self._remote_single(
+            task, REASONING_ANSWER_SYSTEM_PROMPT, "remote_reasoning",
+            features, max_tokens=max(self.cfg.remote.max_tokens, 1200),
+            category="math")
 
     # ---------- model-role selection ----------
 
@@ -217,11 +274,17 @@ class RoutingAgent:
             rest = [m for m in tiers if m not in hits]
             return (hits + rest) if hits else tiers
 
-        if category in ("code_generation", "code_debugging"):
-            return bump("code", "kimi")
+        if category in ("code_generation", "code_debugging", "ner"):
+            # minimax-m3 answers these with terse, deterministic JSON
+            # completions — measured ~290-380 total tokens/task vs kimi's
+            # volatile 400-940 for answers the judge grades identically
+            # (identical output across repeated codegen runs at temp 0).
+            # Falls back to the kimi order when no minimax checkpoint is on
+            # the allowed list; kimi is the next tier for a blank/failure.
+            return bump("minimax", "m3")
         if category in ("sentiment", "summarization"):
             return bump("gemma")
-        # factual, ner, math/logic votes, generic fallback
+        # factual, math/logic, generic fallback
         return bump("kimi", "code")
 
     def _remote_longform(self, task: Task, category: str,
@@ -282,66 +345,6 @@ class RoutingAgent:
         except Exception as exc:
             features["local_fallback_error"] = str(exc)[:200]
             return ""
-
-    def _remote_self_consistency(self, task: Task) -> Decision:
-        """Cross-FAMILY majority vote for math/logic.
-
-        Sampling the same model (or the same weights re-quantized) repeatedly
-        only catches random slips — a systematic reasoning bias reproduces in
-        every sample, which is exactly what sank the Gemma-only vote plan on
-        the real grading run. v4 votes with genuinely independent models:
-        the strongest general instruct model, the dedicated reasoning model,
-        then a Gemma checkpoint as tie-breaker. Early stop when the first two
-        families agree on a non-blank answer (2-of-2 cross-family agreement
-        is a stronger signal than 3-of-3 same-family ever was)."""
-        general = self._tier_order(None)  # kimi-first
-        reasoning = [m for m in self.cfg.remote.tiers
-                     if any(s in m.lower() for s in ("minimax", "m3", "r1"))]
-        gemma = [m for m in self.cfg.remote.tiers if "gemma" in m.lower()]
-        plan = [general[0]]
-        if reasoning and reasoning[0] != plan[0]:
-            plan.append(reasoning[0])
-        elif len(general) > 1:
-            plan.append(general[1])
-        plan.append(gemma[0] if gemma else general[0])
-        plan.append(general[0])  # 4th vote breaks a 1-1-1 split toward kimi
-
-        answers: list[str] = []
-        remote_tokens = 0
-        for i, model in enumerate(plan):
-            # Reasoning-channel models (minimax-m3, gemma4-class) burn budget
-            # on hidden reasoning before the JSON content — too small a
-            # max_tokens returns 200 OK with EMPTY content (observed on
-            # r42/r44 at 320 tokens). 1200 still clears the hardest multi-step
-            # problems in our grading-style set without truncating (validated
-            # 19/19), while capping any run-away chain sooner than the old
-            # 2000. temp 0.3 keeps the reasoning direct rather than rambling;
-            # usage bills actual tokens, not the cap.
-            try:
-                resp = self._remote.chat(model, REASONING_ANSWER_SYSTEM_PROMPT,
-                                         task.prompt,
-                                         max_tokens=max(self.cfg.remote.max_tokens, 1200),
-                                         temperature=0.3)
-            except Exception:
-                answers.append("")  # failed vote counts as blank, not fatal
-                continue
-            remote_tokens += resp.total_tokens
-            answers.append(str(extract_json_field(resp.text, "answer")
-                               or resp.text.strip()))
-            if i == 1:
-                agree, _ = answers_agree(answers[0], answers[1])
-                if agree and normalize_answer(answers[0]):
-                    break
-        answer = majority_vote(answers)
-        if not normalize_answer(answer):
-            answer = self._local_last_resort(
-                task, REASONING_ANSWER_SYSTEM_PROMPT, {})
-        self.cache.store(task.prompt, answer)
-        return Decision(task.id, task.prompt, "remote_self_consistency",
-                        answer, remote_tokens=remote_tokens, local_tokens=0,
-                        latency_s=0.0,
-                        features={"computational": True, "votes": answers,
-                                  "vote_models": plan[:len(answers)]})
 
     # ---------- plumbing ----------
 

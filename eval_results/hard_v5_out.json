@@ -1,0 +1,78 @@
+[
+  {
+    "task_id": "h01",
+    "answer": "Vatican City"
+  },
+  {
+    "task_id": "h02",
+    "answer": "Iron"
+  },
+  {
+    "task_id": "h03",
+    "answer": "1989"
+  },
+  {
+    "task_id": "h04",
+    "answer": "105"
+  },
+  {
+    "task_id": "h05",
+    "answer": "78"
+  },
+  {
+    "task_id": "h06",
+    "answer": "42"
+  },
+  {
+    "task_id": "h07",
+    "answer": "Ben"
+  },
+  {
+    "task_id": "h08",
+    "answer": "9"
+  },
+  {
+    "task_id": "h09",
+    "answer": "def fizzbuzz(n):\n    result = []\n    for i in range(1, n + 1):\n        if i % 15 == 0:\n            result.append('FizzBuzz')\n        elif i % 3 == 0:\n            result.append('Fizz')\n        elif i % 5 == 0:\n            result.append('Buzz')\n        else:\n            result.append(str(i))\n    return result"
+  },
+  {
+    "task_id": "h10",
+    "answer": "def second_largest(nums):\n    \"\"\"Return the second largest unique value in nums, or None if it doesn't exist.\"\"\"\n    if not isinstance(nums, (list, tuple)):\n        raise TypeError(\"Input must be a list or tuple of integers\")\n    unique = set()\n    for x in nums:\n        if not isinstance(x, int) or isinstance(x, bool):\n            raise TypeError(\"All elements must be integers\")\n        unique.add(x)\n    if len(unique) < 2:\n        return None\n    unique.remove(max(unique))\n    return max(unique)\n"
+  },
+  {
+    "task_id": "h11",
+    "answer": "The factorial function initializes result to 0 and multiplies by i starting from 0, so it always returns 0; it should start with result = 1 and iterate from 1 to n inclusive.\n\nCorrected code:\ndef factorial(n):\n    result = 1\n    for i in range(1, n + 1):\n        result *= i\n    return result"
+  },
+  {
+    "task_id": "h12",
+    "answer": "The line `count + 1` does not update the variable; it should be `count += 1`.\n\nCorrected code:\ndef count_vowels(s):\n    count = 0\n    for ch in s:\n        if ch in 'aeiou':\n            count += 1\n    return count"
+  },
+  {
+    "task_id": "h13",
+    "answer": "Meteorologists have recorded the highest number of named Atlantic storms in a decade, prompting coastal cities to revise emergency budgets, expand evacuation signage, and coordinate with federal agencies on new early-warning systems to reduce last-minute chaos."
+  },
+  {
+    "task_id": "h14",
+    "answer": "Revenue grew 12% on enterprise subscriptions, but hardware declined and guidance was lowered due to currency headwinds."
+  },
+  {
+    "task_id": "h15",
+    "answer": "June 5, 2023 (date); Satya Nadella (person); Build (event); Seattle (location); Microsoft (organization); OpenAI (organization); Azure (product); Europe (location)"
+  },
+  {
+    "task_id": "h16",
+    "answer": "Elon Musk (person); SpaceX (organization); Falcon 9 (organization); Cape Canaveral (location); Friday (date); European Space Agency (organization)"
+  },
+  {
+    "task_id": "h17",
+    "answer": "negative"
+  },
+  {
+    "task_id": "h18",
+    "answer": "positive"
+  },
+  {
+    "task_id": "h19",
+    "answer": "7.5"
+  }
+]
