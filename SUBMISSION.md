@@ -11,51 +11,60 @@ Copy-paste content for the lablab.ai submission form. Team: **Veritas**
 
 ## Short Description (one-liner)
 
-A routing agent that answers tasks with two free local models that must agree, escalates math and logic to early-stopping self-consistency votes, and pays Fireworks tokens only when a cheaper path can't clear the accuracy gate — validated at 100% category accuracy.
+A routing agent that classifies every task into its competition category and sends it to the allowed model best suited for it — cross-family self-consistency votes for math/logic, a code specialist for code, Gemma for sentiment and summaries — validated live at 19/19 correct on a grading-style task set.
 
 ## Long Description
 
-CascadeRouter is a Track 1 agent built on one principle: **the cheapest token is the one you never send.**
+CascadeRouter is a Track 1 agent built on one principle learned the hard way:
+**accuracy is a gate, not a score — a token you saved on a wrong answer is worth
+exactly nothing.**
 
-Every task is first classified into one of the eight competition categories with a
-zero-cost classifier, then routed down the cheapest path that still clears the
-accuracy gate:
+Our first submission routed nearly half of all tasks to free bundled 1B-class
+local models and scored 57.9%: below the 80% accuracy gate, so every saved token
+was wasted. v4 is the redesign that follows from that measurement. Every task is
+classified into one of the eight competition categories by a zero-cost
+classifier, then answered by the *strongest allowed model for that category*:
 
-- **Factual & sentiment** → two bundled 1B-class local models (Llama 3.2 1B +
-  Qwen2.5 1.5B, different training lineages) answer independently. If they agree,
-  that's the answer — **zero Fireworks tokens**. Agreement between unrelated models
-  is a far stronger free confidence signal than any single model's self-rating.
-- **Math & logic** → straight to remote self-consistency: up to 4 reasoning votes
-  through the cheapest allowed Fireworks model, early-stopped as soon as two agree
-  (−37% tokens at unchanged accuracy in our evals). Small local models fail
-  arithmetic in *correlated* ways, so local agreement is deliberately skipped here.
-- **Code generation, code debugging, summarization, NER** → one remote call with a
-  category-tuned prompt. NER lives here because it is graded on *completeness*,
-  which a local critic cannot verify — we watched a 1B model drop "Tim Cook" from
-  an extraction and an 8B critic confidently approve it. Measured, not guessed.
-- **Escalation is verify-not-regenerate**: when locals disagree, the remote model
-  is sent the local draft and asked to confirm or fix it — confirm/fix responses
-  are far shorter than regeneration, so escalations cost fewer scored tokens.
+- **Math & logic** → cross-family self-consistency: one vote each from the
+  strongest general instruct model, the dedicated reasoning model, and Gemma 4 —
+  independently trained families, so a systematic bias in one can't fake a
+  majority. Early-stopped as soon as the first two families agree (2-of-2
+  cross-family agreement is a stronger signal than any same-family majority,
+  and ~40% cheaper).
+- **Code generation & debugging** → one call to the code-specialist model
+  (`kimi-k2p7-code`) with a category-tuned prompt.
+- **Sentiment & summarization** → Gemma-first single call (Best Use of Gemma),
+  with the stronger general models behind it if it fails.
+- **Factual & NER** → one terse call to the strongest general model; short-form
+  answers are a bare label/name/number, so completions cost single-digit tokens.
+- **Never-blank guarantee** → reasoning-channel models can return HTTP 200 with
+  empty content when truncated; an empty answer is a guaranteed zero. Every
+  route escalates through the remaining allowed models on failure *or* blank
+  output, ending at the bundled local models (Llama 3.2 1B + Qwen2.5 1.5B) as a
+  last resort — a plausible local answer beats a certain-zero blank.
 
-`ALLOWED_MODELS` is read at runtime and auto-ordered **Gemma-first, largest-first**,
-so every escalation lands on Gemma 4 31B IT via Fireworks (Best Use of Gemma).
-Every tier emits structured JSON — no filler tokens anywhere. The escalation
-threshold is calibrated against our own decision logs, not hand-tuned.
+`ALLOWED_MODELS` is read at runtime, never hardcoded. Every tier emits
+structured JSON — no preamble or filler tokens anywhere. A within-run dedup
+cache answers repeated prompts once (in-memory, exact-match; nothing
+precomputed or persisted).
 
-The submission is a single self-contained ~4 GB linux/amd64 image: agent + Ollama +
-both local models baked into the layers. It reads `/input/tasks.json`, writes
-`/output/results.json`, honors all env vars, runs tasks on a worker pool with 25 s
-per-request timeouts, and degrades gracefully (local tier dies → remote-only;
-a single bad task → empty answer, never a crashed batch).
+The submission is a single self-contained ~4 GB linux/amd64 image: agent +
+Ollama + both fallback models baked into the layers. It reads
+`/input/tasks.json`, writes `/output/results.json`, honors all env vars, runs
+tasks on a worker pool with 25 s per-request timeouts, and degrades gracefully
+(any tier dies → next tier; a single bad task → empty answer, never a crashed
+batch).
 
-Validation on real models: **8/8 (100%) across all eight categories at 2,597
-remote tokens** on our category smoke set, and 100% / 16,730 tokens / 23 of 50
-tasks at $0 on our 50-task proxy set.
+Validation on the real Fireworks API, on a 19-task set mirroring the grading
+distribution: **19/19 correct, 8,822 remote tokens, 27 s wall time** — including
+a live demonstration of the escalation ladder recovering through three
+unavailable model tiers without losing a single answer (receipts committed in
+`eval_results/hard_v4b_*`).
 
 ## Technology & Category Tags
 
-`Gemma` · `Fireworks AI` · `AMD Developer Cloud` · `Ollama` · `Llama 3.2` ·
-`Qwen` · `Python` · `Docker`
+`Gemma` · `Fireworks AI` · `AMD Developer Cloud` · `Ollama` · `Kimi K2` ·
+`MiniMax` · `Python` · `Docker`
 
 ## Links (fill in)
 
@@ -69,29 +78,34 @@ tasks at $0 on our 50-task proxy set.
 ## Video Presentation script (~2 min)
 
 1. **(0:00–0:20) Hook** — "Track 1 scores two things: accuracy first, tokens
-   second. Most agents pay for every answer. Ours refuses to pay unless it has to."
-2. **(0:20–0:50) The idea** — show the routing diagram: 8-category classifier;
-   free dual-local agreement; self-consistency for math/logic; category-tuned
-   single calls for code/summarization/NER. "Two tiny models that agree are
-   worth more than one big model's confidence."
-3. **(0:50–1:20) Demo** — run `docker compose run agent` on the sample input,
-   show `results.json` appearing and the per-task decision log: which tasks were
-   free, which escalated, token counts per route.
-4. **(1:20–1:45) Receipts** — eval screenshots: 8/8 categories, 100% on the
-   50-task proxy set, the NER failure case that made us re-route it (engineering
-   by measurement).
-5. **(1:45–2:00) Close** — Gemma-first ordering via Fireworks, fully
-   self-contained image, all Participant Guide budgets honored. "Accuracy is the
-   gate. Tokens are the score. CascadeRouter optimizes both, in that order."
+   second. Our first submission optimized tokens and failed the accuracy gate
+   at 57.9%. Here's what we rebuilt — and why it now scores 19 out of 19."
+2. **(0:20–0:50) The idea** — show the routing diagram (README): 8-category
+   classifier; the right model for each category; cross-family voting for
+   math/logic. "Three models from different families that agree beat one
+   model's confidence — and beat three copies of the same model every time."
+3. **(0:50–1:20) Demo** — run the harness on the 19-task eval set, show
+   `results.json` appearing in 27 seconds and the per-task decision log:
+   category, model chosen, tokens per route.
+4. **(1:20–1:45) Receipts** — 19/19 correct at 8,822 tokens; the live
+   escalation log showing three unavailable tiers recovered without losing an
+   answer; the classifier fix caught by evals ("first class" ≠ code).
+   Engineering by measurement.
+5. **(1:45–2:00) Close** — Gemma answering sentiment and summarization via
+   Fireworks, fully self-contained image, all Participant Guide budgets
+   honored. "Accuracy is the gate. Tokens are the score. CascadeRouter
+   optimizes both, in that order."
 
 ## Slide deck outline (7 slides)
 
 1. Title — CascadeRouter, team, track.
-2. The scoring game — accuracy gate first, then fewest tokens; local = $0.
-3. Architecture — the routing diagram (from README).
-4. Why dual-local agreement works (and where it doesn't — correlated math errors,
-   NER completeness).
-5. Token-saving techniques — verify-not-regenerate, early-stop voting, JSON-only
-   output, calibrated threshold.
-6. Results — 8/8 categories · 100% proxy accuracy · 23/50 tasks free.
-7. Compliance — self-contained amd64 image, env contract, budgets, Gemma-first.
+2. The scoring game — accuracy gate first, then fewest tokens; a saved token on
+   a wrong answer is worth nothing (our 57.9% lesson).
+3. Architecture — the routing diagram (from README): right model per category.
+4. Cross-family self-consistency — why independent model families beat repeated
+   samples of one family; early-stop at first cross-family agreement.
+5. Reliability engineering — never-blank guarantee, escalation ladder proven
+   live through three dead tiers, within-run dedup cache.
+6. Results — 19/19 correct · 8,822 tokens · 27 s on a grading-style set.
+7. Compliance — self-contained amd64 image, env contract, budgets, Gemma via
+   Fireworks on sentiment/summarization.
