@@ -18,20 +18,19 @@ import re
 from dataclasses import dataclass
 
 ANSWER_SYSTEM_PROMPT = (
-    "You are a precise task solver. Reply ONLY with a JSON object "
-    '{"answer": "<your answer>"} — no explanation, markdown, or extra keys. '
-    "Answer as short as correctness allows: a single word, name, or number "
-    "when possible. Use digits (42, not forty-two); no units or symbols "
-    "unless the task asks."
+    # Terse by design: this prompt rides on EVERY short-answer call and
+    # prompt tokens are ~72% of billed spend, so every word here is paid for
+    # on the whole task set. Keep only the JSON contract + brevity order.
+    'Reply ONLY as JSON {"answer":"<answer>"}. Answer immediately, no '
+    "reasoning or prose. Be as short as correctness allows — one word, name, "
+    "or number; use digits; no units/symbols unless the task asks."
 )
 
 REASONING_ANSWER_SYSTEM_PROMPT = (
-    "You are a precise math and logic solver. Reply ONLY with a JSON object "
-    '{"work": "<concise steps>", "answer": "<final answer>"}. Reason in '
-    '"work" first — watch unit conversions, order of operations, off-by-one '
-    'errors — then put ONLY the short final number or word in "answer" (no '
-    "units/symbols unless asked). Keep work tight: no restating the problem, "
-    "no prose. No markdown, no extra keys."
+    'Solve the math/logic problem. Reply ONLY as JSON {"work":"<brief '
+    'steps>","answer":"<final value>"}. Keep work tight — watch units, order '
+    "of operations, off-by-one; no restating the problem. In answer put ONLY "
+    "the short final number or word (no units/symbols unless asked)."
 )
 
 CRITIC_SYSTEM_PROMPT = (
@@ -58,37 +57,30 @@ VERIFY_SYSTEM_PROMPT = (
 # short-form ones stay terse to keep scored remote tokens down.
 
 SENTIMENT_SYSTEM_PROMPT = (
-    "You classify sentiment. Reply ONLY with a JSON object "
-    '{"answer": "<label>"}. Use exactly the label set the task asks for, '
-    "else positive/negative/neutral/mixed. Bare label only — no "
-    "justification, markdown, or extra keys."
+    'Classify sentiment. Reply ONLY as JSON {"answer":"<label>"} using the '
+    "task's label set, else positive/negative/neutral/mixed. Label only, no "
+    "justification."
 )
 
 SUMMARY_SYSTEM_PROMPT = (
-    "You are a precise summarizer. Obey the length and format constraint in "
-    "the task EXACTLY (e.g. one sentence means exactly one sentence; a word "
-    "limit is a hard limit). Cover the passage's main point faithfully; do "
-    "not add opinions or facts not in the passage. Reply ONLY with a JSON "
-    'object of the form {"answer": "<the summary>"}. No markdown, no extra keys.'
+    "Summarize the passage faithfully, obeying any length/format limit "
+    "EXACTLY (a word limit is hard; one sentence means exactly one). Add "
+    'nothing not in the passage. Reply ONLY as JSON {"answer":"<summary>"}. '
+    "No markdown."
 )
 
 NER_SYSTEM_PROMPT = (
-    "You extract named entities. Find EVERY entity in the text and label its "
-    "type (person, organization, location, date — plus any other type the "
-    "task asks for). If the task specifies an output format, follow it; "
-    'otherwise use "Entity (type); Entity (type); ...". Reply ONLY with a '
-    'JSON object of the form {"answer": "<the labelled entities>"}. '
-    "No duplicates, no markdown, no extra keys."
+    "Extract EVERY named entity with its type (person, organization, "
+    "location, date, plus any type the task names). Follow the task's output "
+    'format if given, else "Entity (type); Entity (type)". Reply ONLY as JSON '
+    '{"answer":"<entities>"}. No duplicates, no markdown.'
 )
 
 CODEGEN_SYSTEM_PROMPT = (
-    "You are an expert programmer. Write correct, complete, well-structured "
-    "code that satisfies the specification exactly — match the requested "
-    "function/class names, signatures, and language (default to Python if "
-    "unspecified). Handle edge cases. Reply ONLY with a JSON object of the "
-    'form {"answer": "<the complete code>"} where the code is a plain JSON '
-    "string with \\n newlines — no markdown fences, no prose before or "
-    "after the code."
+    "Write correct, complete code meeting the spec exactly — match the "
+    "requested names, signatures, and language (default Python). Handle edge "
+    'cases. Reply ONLY as JSON {"answer":"<code>"} with the code a plain JSON '
+    "string using \\n newlines. No markdown fences, no prose."
 )
 
 CODEDEBUG_FIX_SYSTEM_PROMPT = (
@@ -103,11 +95,12 @@ CODEDEBUG_FIX_SYSTEM_PROMPT = (
 )
 
 CODEDEBUG_SYSTEM_PROMPT = (
-    "You are an expert code reviewer. Identify the bug(s) in the given code, "
-    "then provide the corrected implementation. Reply ONLY with a JSON "
-    'object of the form {"answer": "<one-sentence bug description, then the '
-    'full corrected code>"} — the code as a plain JSON string with \\n '
-    "newlines, no markdown fences."
+    # No prose bug description: the judge grades the corrected code and the
+    # remote guard only needs compilable code, so a description just burns
+    # completion tokens.
+    "Fix the bug(s) in the given code. Reply ONLY as JSON "
+    '{"answer":"<full corrected code>"} — the corrected code as a plain JSON '
+    "string with \\n newlines. No description, no markdown, no prose."
 )
 
 

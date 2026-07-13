@@ -918,18 +918,38 @@ class RoutingAgent:
             rest = [m for m in tiers if m not in hits]
             return (hits + rest) if hits else tiers
 
+        def order(*subs_groups: tuple[str, ...]) -> list[str]:
+            """Front the tier list by an ORDERED sequence of match-groups.
+            order(("kimi",), ("minimax", "m3")) => kimi first, then minimax,
+            then whatever remains — so the second-choice fallback is the
+            model we actually measured, not an arbitrary leftover."""
+            front: list[str] = []
+            for subs in subs_groups:
+                for m in tiers:
+                    if m not in front and any(s in m.lower() for s in subs):
+                        front.append(m)
+            rest = [m for m in tiers if m not in front]
+            return front + rest if front else tiers
+
+        # Measured per-category on the hard set (real Fireworks, new terse
+        # prompts). Prompt tokens are ~85% of billed spend and kimi-k2p7-code
+        # encodes a prompt in ~half the tokens minimax-m3 does, so on SHORT
+        # answers (factual/math/logic) kimi's leaner prompt wins the total
+        # even though its completion is chattier — measured 121-233 tok vs
+        # minimax's 184-277. kimi 400-errors on ~1/6 of prompts, but that
+        # just escalates to minimax (next tier) for a free correct answer, so
+        # kimi-first costs nothing on accuracy and saves tokens when it works.
+        if category in ("factual", "math", "logic"):
+            return order(("kimi",), ("minimax", "m3"))
+        # Long/structured answers: kimi's completion runs to the cap here
+        # (summaries/NER measured at 300+ tok, truncation-blank risk), while
+        # minimax stays terse and reliable — minimax-first.
         if category in ("code_generation", "code_debugging", "ner"):
-            # minimax-m3 answers these with terse, deterministic JSON
-            # completions — measured ~290-380 total tokens/task vs kimi's
-            # volatile 400-940 for answers the judge grades identically
-            # (identical output across repeated codegen runs at temp 0).
-            # Falls back to the kimi order when no minimax checkpoint is on
-            # the allowed list; kimi is the next tier for a blank/failure.
             return bump("minimax", "m3")
         if category in ("sentiment", "summarization"):
-            return bump("gemma")
-        # factual, math/logic, generic fallback
-        return bump("kimi", "code")
+            return bump("gemma")  # terse AND keeps Gemma bonus eligibility
+        # generic fallback: the reliable terse model
+        return bump("minimax", "m3")
 
     def _remote_longform(self, task: Task, category: str,
                          features: dict) -> Decision:
