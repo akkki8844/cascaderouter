@@ -61,7 +61,7 @@
   },
   {
     "task_id": "h16",
-    "answer": "Elon Musk (person); SpaceX (organization); Falcon 9 rocket (location); Cape Canaveral (location); Friday (date); European Space Agency (organization); satellite (object)"
+    "answer": "Elon Musk (person); SpaceX (organization); Cape Canaveral (location); Friday (date); European Space Agency (organization); Falcon 9 rocket (organization); satellites (object)"
   },
   {
     "task_id": "h17",

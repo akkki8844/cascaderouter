@@ -62,6 +62,10 @@ class RemoteModelConfig:
 class RouterConfig:
     # always_remote (v0) | always_local (v1) | heuristic (v2) | cascade (v3)
     strategy: str = "cascade"
+    # Hard run-wide ceiling on billed remote (Fireworks) tokens; 0 disables.
+    # Harness mode sets this (REMOTE_TOKEN_BUDGET env, default 480) so the
+    # leaderboard number is bounded no matter what the hidden task set does.
+    remote_token_budget: int = 0
     escalation_threshold: float = 0.5
     critique_enabled: bool = True
     agreement_fuzzy_threshold: float = 0.90

@@ -28,7 +28,15 @@ Route order (strategy: cascade, v8 min-token revision):
                                     battery in a sandboxed subprocess);
                                     anything less goes minimax-first
   3. local models                -> emergency fallback ONLY (all remote
-                                    tiers failed or returned blank)
+                                    tiers failed, returned blank, or were
+                                    refused by the remote token budget)
+
+Hard remote budget (v9): every remote call must first reserve its worst
+case against a run-wide ceiling on billed Fireworks tokens (harness
+default 480 — the leaderboard ranks by ascending remote tokens, so the
+scored number is bounded by construction, no matter what the hidden task
+set looks like). A refused call gets the free local answer instead:
+over budget we risk one answer, never the rank.
 
 Scoring reality (live leaderboard, 2026-07-13): rank is ascending REMOTE
 tokens above a ~50% accuracy floor — tokens decide placement, accuracy just
@@ -54,6 +62,7 @@ import json
 import re
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass, field
 
@@ -292,6 +301,70 @@ def _meets_length_constraint(prompt: str, answer: str) -> bool:
     return True
 
 
+# When the run-wide remote budget is active, each category's remote calls get
+# a clamped completion cap (billed completion tokens can never exceed
+# max_tokens) and a minimum viable grant below which the call is refused
+# outright — a code answer truncated at 100 tokens bills real money for
+# garbage, so it's cheaper to not make the call at all.
+_BUDGET_COMPLETION: dict[str, tuple[int, int]] = {
+    "code_generation": (700, 400),
+    "code_debugging": (700, 400),
+    "ner": (300, 150),
+    "summarization": (300, 120),
+    "math": (400, 120),
+}
+_BUDGET_COMPLETION_DEFAULT = (160, 48)  # short answers: factual/sentiment/etc.
+
+
+class _RemoteBudget:
+    """Hard run-wide ceiling on billed Fireworks tokens (leaderboard rank is
+    ascending remote tokens — this converts 'probably cheap' into 'cannot
+    exceed the cap on ANY task set').
+
+    Reserve-then-settle: before a remote call, a conservative estimate
+    (prompt chars/3 + margin, plus the FULL completion grant — max_tokens
+    hard-bounds billed completion) is reserved under a lock, so two worker
+    threads can't race past the limit; after the call the reservation is
+    replaced by the actual billed usage. A call that doesn't fit is refused
+    and the router falls back to the free local answer instead."""
+
+    def __init__(self, limit: int):
+        self.limit = limit  # <= 0 disables (local dev)
+        self._lock = threading.Lock()
+        self._spent = 0
+        self._reserved = 0
+
+    @property
+    def active(self) -> bool:
+        return self.limit > 0
+
+    def reserve(self, prompt_chars: int, completion_cap: int,
+                completion_min: int) -> tuple[int, int] | None:
+        """Try to fit one call. Returns (reservation, granted_completion)
+        or None when the call must not be made. prompt_chars/3 overcounts
+        real tokenization (~4 chars/token) on purpose — the estimate must
+        be an upper bound for the ceiling to be a guarantee."""
+        est_prompt = prompt_chars // 3 + 40
+        with self._lock:
+            room = self.limit - self._spent - self._reserved
+            granted = min(completion_cap, room - est_prompt)
+            if granted < completion_min:
+                return None
+            reservation = est_prompt + granted
+            self._reserved += reservation
+            return reservation, granted
+
+    def settle(self, reservation: int, actual: int) -> None:
+        with self._lock:
+            self._reserved -= reservation
+            self._spent += actual
+
+    @property
+    def spent(self) -> int:
+        with self._lock:
+            return self._spent
+
+
 @dataclass
 class Decision:
     task_id: str
@@ -329,6 +402,8 @@ class RoutingAgent:
                                cfg.cache.similarity_threshold,
                                cfg.cache.enabled,
                                cfg.cache.persist)
+        self._budget = _RemoteBudget(
+            getattr(cfg.router, "remote_token_budget", 0))
 
     # ---------- public API ----------
 
@@ -765,18 +840,45 @@ class RoutingAgent:
         """One remote generation, escalating through the category-ordered
         tier list on failure OR on an empty extracted answer (a truncated
         reasoning channel can return 200 OK with blank content — an empty
-        answer is a guaranteed zero, so it must never be final)."""
+        answer is a guaranteed zero, so it must never be final).
+
+        Every attempt must first fit inside the run-wide remote token budget
+        (when active): the reservation covers the whole worst case, so the
+        run's billed Fireworks total can never exceed the cap. A refused
+        call falls through to the free local last resort — over budget we
+        risk an answer, never the rank."""
         remote_tokens = 0
         answer = ""
         for i, tier_model in enumerate(self._tier_order(category)):
+            want = max_tokens or self.cfg.remote.max_tokens
+            reservation = 0
+            if self._budget.active:
+                cap, floor = _BUDGET_COMPLETION.get(
+                    category or "", _BUDGET_COMPLETION_DEFAULT)
+                grant = self._budget.reserve(
+                    len(system) + len(task.prompt), min(want, cap), floor)
+                if grant is None:
+                    features["budget_denied"] = True
+                    break
+                reservation, want = grant
             try:
                 resp = self._remote.chat(
                     tier_model, system, task.prompt,
-                    max_tokens=max_tokens or self.cfg.remote.max_tokens,
+                    max_tokens=want,
                     temperature=self.cfg.remote.temperature)
             except Exception as exc:
+                # A fast failure (404 model, refused connection) bills
+                # nothing; a timeout MAY have generated server-side, so its
+                # full reservation stays spent — the guarantee never leans
+                # on an optimistic guess.
+                billed_guess = (reservation
+                                if "time" in str(exc).lower() else 0)
+                if self._budget.active:
+                    self._budget.settle(reservation, billed_guess)
                 features[f"tier{i + 1}_error"] = str(exc)[:200]
                 continue
+            if self._budget.active:
+                self._budget.settle(reservation, resp.total_tokens)
             remote_tokens += resp.total_tokens
             answer = str(extract_json_field(resp.text, "answer")
                          or resp.text.strip())

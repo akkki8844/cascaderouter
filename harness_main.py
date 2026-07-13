@@ -60,6 +60,12 @@ def build_agent() -> RoutingAgent:
     # 3. Per-request timeout under the competition's 30s ceiling.
     cfg.local.request_timeout = 25.0
     cfg.remote.request_timeout = 25.0
+    # 3b. Hard remote-token ceiling: rank is ascending Fireworks tokens, so
+    #     the run's billed total must be bounded even on a hostile task set.
+    #     Reserve-based, thread-safe; a refused call falls back to the free
+    #     local answer (see router._RemoteBudget).
+    cfg.router.remote_token_budget = int(
+        os.environ.get("REMOTE_TOKEN_BUDGET", "480"))
     # 4. The local tier is the Ollama bundled in this container; config.yaml
     #    already points at localhost:11434. LOCAL_BASE_URL overrides it for
     #    local testing against a differently-hosted server.

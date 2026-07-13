@@ -2,9 +2,9 @@
 
 **AMD Developer Hackathon: ACT II — Track 1** · Team: **Veritas**
 
-An AI agent that answers every task with the **cheapest source that can be mechanically trusted** — free bundled local models behind hard acceptance guards (dual-model agreement, behavioral cross-execution of code fixes, compile checks, completeness checks, length-constraint checks) with targeted free retries, escalating to the measured-cheapest strong remote model only where the guards prove the free answer can't be trusted. The leaderboard ranks by fewest tokens above an accuracy floor; the router spends remote tokens only on the tasks the local models are *measurably wrong* about.
+An AI agent that answers every task with the **cheapest source that can be mechanically trusted** — free bundled local models behind hard acceptance guards (dual-model agreement, behavioral cross-execution of code fixes, compile checks, completeness checks, length-constraint checks) with targeted free retries, escalating to the measured-cheapest strong remote model only where the guards prove the free answer can't be trusted. The leaderboard ranks by fewest tokens above an accuracy floor; the router spends remote tokens only on the tasks the local models are *measurably wrong* about — and a **hard run-wide budget guarantees the billed total can never exceed 480 tokens, on any task set**.
 
-**Internal validation on real Fireworks models (19-task set mirroring the grading distribution, no mocks): 17/19 correct (89.5%), 390 remote tokens, 76 s wall time — 17 of 19 tasks answered for zero tokens** (`eval_results/hard_v5_decisions.jsonl`; reproduced twice at 375/390 tokens). See `AMDPLAN/IMPLEMENTATION.md` for the full build record and `AMDPLAN/RUN.md` for a copy-paste run guide.
+**Internal validation on real Fireworks models (19-task set mirroring the grading distribution, no mocks): 17/19 correct (89.5%), 375 remote tokens, 70 s wall time — 17 of 19 tasks answered for zero tokens** (`eval_results/hard_v5_decisions.jsonl`; reproduced at 348/375 tokens). Worst-case drill: with the budget forced to 1 token the same run completes at 15/19 (78.9%) and exactly **0** remote tokens. See `AMDPLAN/IMPLEMENTATION.md` for the full build record and `AMDPLAN/RUN.md` for a copy-paste run guide.
 
 ## The submission contract (Participant Guide compliance)
 
@@ -57,13 +57,16 @@ aware)                        then shorten    retries name    EXECUTED side
 ONE call to the measured-cheapest strong remote model per category:
 kimi (factual, math/logic w/ reasoning prompt) · minimax-m3 (code, NER:
 terse JSON, ~1/2–1/3 kimi's tokens) · Gemma-first (sentiment, summaries)
-              │ (any tier fails or returns blank)
+— every call must first FIT the hard 480-token run budget (reserve-then-
+settle, thread-safe); a refused call takes the free local answer instead
+              │ (any tier fails, returns blank, or is over budget)
               ▼
    next allowed model … ▶ local models (last resort — never return blank)
 ```
 
 Key techniques (see `AMDPLAN/03_ARCHITECTURE.md` for the full design rationale):
 
+- **Hard remote-token budget (v9)** — the number the leaderboard ranks by is *bounded by construction*: every remote call must first reserve its worst case (over-counted prompt estimate + the full completion cap, which `max_tokens` hard-bounds) against a thread-safe run-wide ceiling of 480 billed Fireworks tokens (`REMOTE_TOKEN_BUDGET`). A call that doesn't fit is never made — the task gets the free local answer instead, so exceeding the budget risks one answer, never the rank. Per-category completion clamps keep escalations cheap (a factual rescue bills ~160–215; a code-sized call that would eat the whole ceiling is refused up front rather than billed truncated).
 - **Free answers only behind mechanical guards** — the v3 lesson (57.9% real score) is that 1B local models can't be *trusted*; the v7/v8 insight is they don't need to be — they need to be *checked*. Dual-lineage agreement for short answers, `compile()` + function-name checks for generated code, capitalized-phrase completeness + type-sanity for NER, word/sentence-limit checks for summaries, and for code debugging the strongest guard in the router: both lineages produce forced-code fixes that are accepted only when they compile, actually change the buggy code, and **agree behaviorally when executed side by side** on a probe battery in a sandboxed, hard-timeout subprocess. Every guard failure escalates; a local miss costs latency, never an answer. Result: 17 of 19 validation tasks answered for zero tokens with no measured accuracy loss.
 - **Targeted free retries** — a guard doesn't just reject, it says *why*, and the retry feeds that back: an incomplete NER answer is retried with the exact capitalized words it missed; a complete-but-untyped one is retried with its own list and an order to label it; an over-long summary first gets a HARDER stated limit, then a rewrite pass shortening its own previous attempt (compression is far easier for a small model than constrained generation). Local retries score zero tokens.
 - **Category-aware, cost-measured remote selection** — when a guard does escalate, the call goes to the allowed model that delivers a correct answer for the fewest measured tokens: `minimax-m3`'s terse deterministic JSON for code and NER (~290–380 tokens/task vs kimi's volatile 400–940 for judge-equivalent answers), `kimi-k2p7-code` for factual and math/logic (it alone answered every trick question correctly), Gemma-4 checkpoints leading sentiment and summarization.

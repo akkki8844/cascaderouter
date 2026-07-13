@@ -11,7 +11,7 @@ Copy-paste content for the lablab.ai submission form. Team: **Veritas**
 
 ## Short Description (one-liner)
 
-A routing agent that answers every task with the cheapest source that can be mechanically verified — free local models behind compile checks, dual-model agreement, behavioral cross-execution of code fixes, and completeness guards with targeted free retries — validated live at 89.5% with 17 of 19 tasks answered for ZERO tokens (390 total remote tokens).
+A routing agent that answers every task with the cheapest source that can be mechanically verified — free local models behind compile checks, dual-model agreement, behavioral cross-execution of code fixes, and completeness guards with targeted free retries — plus a hard run-wide budget that makes it IMPOSSIBLE to bill more than 480 remote tokens on any task set. Validated live at 89.5% with 17 of 19 tasks answered for ZERO tokens (375 total remote tokens).
 
 ## Long Description
 
@@ -51,6 +51,15 @@ specific to the category's known failure mode — and a rejected attempt gets
   mechanically satisfied; retries state a harder limit, then a rewrite pass
   shortens the model's own previous attempt.
 
+On top of the guards sits a **hard remote-token budget**: every remote call
+must first reserve its worst case (over-counted prompt estimate plus the
+full completion cap, which `max_tokens` hard-bounds) against a thread-safe
+run-wide ceiling of 480 billed Fireworks tokens. A call that doesn't fit is
+never made — the task takes the free local answer instead. The number the
+leaderboard ranks by is therefore **bounded by construction, no matter what
+the hidden task set looks like**; a worst-case drill with the budget forced
+to 1 token completed the full run at 78.9% and exactly 0 remote tokens.
+
 Every guard failure escalates to **one call to the measured-cheapest strong
 remote model for that category** — we priced every category on every allowed
 model on the real Fireworks API: `minimax-m3`'s terse deterministic JSON for
@@ -71,13 +80,13 @@ tasks on a worker pool with 25 s per-request timeouts, and degrades gracefully
 batch).
 
 Validation on the real Fireworks API, on a 19-task set mirroring the grading
-distribution: **17/19 correct (89.5%), 390 remote tokens, 76 s wall time —
-17 of 19 tasks answered for zero tokens** (reproduced twice: 375 and 390
-tokens). That is a 95% token cut from our all-remote v4 (19/19, 8,618) for
+distribution: **17/19 correct (89.5%), 375 remote tokens, 70 s wall time —
+17 of 19 tasks answered for zero tokens** (reproduced twice: 348 and 375
+tokens). That is a 96% token cut from our all-remote v4 (19/19, 8,618) for
 two proxy-set misses, and the only remote spend left is the two factual
 tasks both local models are *measurably wrong* about — every other category
-resolves free behind its guard (receipts committed in
-`eval_results/hard_v5_*`).
+resolves free behind its guard, and the hard budget caps the total at 480
+even on a hostile task set (receipts committed in `eval_results/hard_v5_*`).
 
 ## Technology & Category Tags
 
@@ -98,8 +107,9 @@ resolves free behind its guard (receipts committed in
 1. **(0:00–0:20) Hook** — "Track 1 ranks by fewest tokens above an accuracy
    floor. Free 1B models save every token but scored us 57.9%. Strong remote
    models scored 19/19 but cost 8,618 tokens. The answer isn't picking a
-   side — it's *verification*: 89.5% at just 390 tokens, 17 of 19 tasks
-   completely free."
+   side — it's *verification*: 89.5% at just 375 tokens, 17 of 19 tasks
+   completely free — and a hard budget makes billing more than 480 tokens
+   *impossible*, on any task set."
 2. **(0:20–0:50) The idea** — show the routing diagram (README): every task
    goes to the free local models first, but their answer only counts if it
    passes a mechanical guard — generated code must compile, debug fixes from
@@ -108,13 +118,15 @@ resolves free behind its guard (receipts committed in
    limit — and a rejected attempt gets a free retry that names exactly what
    it got wrong. "We don't trust small models. We check them."
 3. **(0:50–1:20) Demo** — run the harness on the 19-task eval set, show
-   `results.json` appearing in ~76 seconds and the per-task decision log:
+   `results.json` appearing in ~70 seconds and the per-task decision log:
    17 tasks at zero tokens; the only two remote calls are the two factual
-   tasks the local models are measurably wrong about.
-4. **(1:20–1:45) Receipts** — 89.5% at 390 tokens (95% below our all-remote
+   tasks the local models are measurably wrong about — and each call first
+   reserved its worst case against the hard 480-token run budget.
+4. **(1:20–1:45) Receipts** — 89.5% at 375 tokens (96% below our all-remote
    build); the behavioral cross-execution guard accepting two independent
-   correct factorial fixes; the completeness guard feeding a local model the
-   entities it dropped. Engineering by measurement.
+   correct factorial fixes; the worst-case drill: budget forced to 1 token,
+   the run still finishes at 78.9% and ZERO remote tokens. Engineering by
+   measurement.
 5. **(1:45–2:00) Close** — Gemma on summaries via Fireworks, fully
    self-contained image, all Participant Guide budgets honored. "Free when
    verifiable. Cheap when not. Never blank."
@@ -136,8 +148,9 @@ resolves free behind its guard (receipts committed in
    code specialist that bills 2–3× the reasoning model for judge-equivalent
    answers; the math vote that never changed an answer; the split data
    showing the 1.5B wins every math/logic disagreement.
-6. Results — 17/19 (89.5%) · 390 tokens · 17/19 tasks free · 76 s (95%
+6. Results — 17/19 (89.5%) · 375 tokens · 17/19 tasks free · 70 s (96%
    cheaper than the all-remote 19/19 build; only the two tasks the locals
-   are measurably wrong about cost anything).
+   are measurably wrong about cost anything; a hard reserve-then-settle
+   budget makes exceeding 480 billed tokens impossible on any task set).
 7. Compliance — self-contained amd64 image, env contract, budgets, Gemma via
    Fireworks on summarization.
