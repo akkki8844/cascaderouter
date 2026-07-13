@@ -91,6 +91,17 @@ CODEGEN_SYSTEM_PROMPT = (
     "after the code."
 )
 
+CODEDEBUG_FIX_SYSTEM_PROMPT = (
+    # Local-tier variant: small models asked to "identify and fix" drift into
+    # prose ABOUT the bug and never emit the fix. Forcing code-only output is
+    # what makes the mechanical (compile + behavioral-agreement) guard
+    # possible at all — probe-verified both bundled locals then produce
+    # correct, executable fixes.
+    "You fix buggy code. Reply ONLY with a JSON object "
+    '{"answer": "<the FULL corrected code>"} — the corrected code itself, '
+    "as a plain JSON string with \\n newlines. No explanation, no markdown."
+)
+
 CODEDEBUG_SYSTEM_PROMPT = (
     "You are an expert code reviewer. Identify the bug(s) in the given code, "
     "then provide the corrected implementation. Reply ONLY with a JSON "

@@ -25,7 +25,7 @@
   },
   {
     "task_id": "h07",
-    "answer": "Ben"
+    "answer": "Therefore, the second tallest person is Ben."
   },
   {
     "task_id": "h08",
@@ -41,11 +41,11 @@
   },
   {
     "task_id": "h11",
-    "answer": "The factorial function has multiple bugs: result should be initialized to 1 (not 0), the range should go from 1 to n+1 (not 0 to n-1), and the multiplication should include i itself (not just i-1). Here is the corrected code:\ndef factorial(n):\n    result = 1\n    for i in range(1, n + 1):\n        result *= i\n    return result"
+    "answer": "def factorial(n):\n    result = 1\n    for i in range(2, n+1):\n        result *= i\n    return result"
   },
   {
     "task_id": "h12",
-    "answer": "The line `count + 1` does not update the variable; it should be `count += 1` to increment the counter."
+    "answer": "def count_vowels(s):\n    count = 0\n    for ch in s:\n        if ch.lower() in 'aeiou':\n            count += 1\n    return count"
   },
   {
     "task_id": "h13",
@@ -53,15 +53,15 @@
   },
   {
     "task_id": "h14",
-    "answer": "Revenue grew 12% on enterprise renewals, but hardware declined and guidance was lowered due to currency headwinds."
+    "answer": "Revenue increased 12% from renewed subscriptions and reduced hardware sales."
   },
   {
     "task_id": "h15",
-    "answer": "June 5, 2023 (date); Satya Nadella (person); Build (event); Seattle (location); Microsoft (organization); OpenAI (organization); Azure (product); Europe (location)"
+    "answer": "[{\"name\": \"Satya Nadella\", \"type\": \"person\"}, {\"name\": \"Microsoft\", \"type\": \"organization\"}, {\"name\": \"OpenAI\", \"type\": \"organization\"}, {\"name\": \"Seattle\", \"type\": \"location\"}, {\"name\": \"Europe\", \"type\": \"location\"}, {\"name\": \"Build conference\", \"type\": \"event\"}, {\"name\": \"Azure services\", \"type\": \"product\"}, {\"name\": \"June 5, 2023\", \"type\": \"date\"}]"
   },
   {
     "task_id": "h16",
-    "answer": "Elon Musk (person); SpaceX (organization); Falcon 9 (organization); Cape Canaveral (location); Friday (date); European Space Agency (organization)"
+    "answer": "Elon Musk (person); SpaceX (organization); Falcon 9 rocket (location); Cape Canaveral (location); Friday (date); European Space Agency (organization); satellite (object)"
   },
   {
     "task_id": "h17",

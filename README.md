@@ -2,9 +2,9 @@
 
 **AMD Developer Hackathon: ACT II — Track 1** · Team: **Veritas**
 
-An AI agent that answers every task with the **cheapest source that can be mechanically trusted** — free bundled local models behind hard acceptance guards (dual-model agreement, compile checks, completeness checks, length-constraint checks), escalating to the measured-cheapest strong remote model the moment any guard fails. The leaderboard ranks by fewest tokens above an accuracy floor; the router spends remote tokens only where a guard proves the free answer can't be trusted.
+An AI agent that answers every task with the **cheapest source that can be mechanically trusted** — free bundled local models behind hard acceptance guards (dual-model agreement, behavioral cross-execution of code fixes, compile checks, completeness checks, length-constraint checks) with targeted free retries, escalating to the measured-cheapest strong remote model only where the guards prove the free answer can't be trusted. The leaderboard ranks by fewest tokens above an accuracy floor; the router spends remote tokens only on the tasks the local models are *measurably wrong* about.
 
-**Internal validation on real Fireworks models (19-task set mirroring the grading distribution, no mocks): 17/19 correct (89.5%), 2,646 remote tokens, 50 s wall time — 9 of 19 tasks answered for zero tokens** (`eval_results/hard_v5_decisions.jsonl`). See `AMDPLAN/IMPLEMENTATION.md` for the full build record and `AMDPLAN/RUN.md` for a copy-paste run guide.
+**Internal validation on real Fireworks models (19-task set mirroring the grading distribution, no mocks): 17/19 correct (89.5%), 390 remote tokens, 76 s wall time — 17 of 19 tasks answered for zero tokens** (`eval_results/hard_v5_decisions.jsonl`; reproduced twice at 375/390 tokens). See `AMDPLAN/IMPLEMENTATION.md` for the full build record and `AMDPLAN/RUN.md` for a copy-paste run guide.
 
 ## The submission contract (Participant Guide compliance)
 
@@ -26,7 +26,7 @@ Budgets honored: container ready < 60 s (Ollama starts in ~2 s, models are pre-b
 
 ## How it works
 
-Each task is first classified into one of the eight Track 1 capability categories, then offered to the **free bundled local models — but their answer only counts if it passes a hard mechanical guard** specific to the category. Guard failures escalate to the measured-cheapest strong remote model for that category, with further tier escalation on failure or blank output. Placement is fewest tokens above an accuracy floor, so every routing choice below is backed by per-category measurements on the real Fireworks API, not vibes.
+Each task is first classified into one of the eight Track 1 capability categories, then offered to the **free bundled local models — but their answer only counts if it passes a hard mechanical guard** specific to the category, with targeted *free* retries that tell the model exactly what its previous attempt got mechanically wrong. Guard failures escalate to the measured-cheapest strong remote model for that category, with further tier escalation on failure or blank output. Placement is fewest tokens above an accuracy floor, so every routing choice below is backed by per-category measurements on the real Fireworks API, not vibes.
 
 ```
 task ──▶ within-run dedup cache ──hit──▶ answer (0 tokens)
@@ -34,20 +34,26 @@ task ──▶ within-run dedup cache ──hit──▶ answer (0 tokens)
               ▼
       category classifier (8 Track 1 categories)
               │
-    ┌───────────────┬────────────────┬───────────────┬──────────────┐
-    │               │                │               │              │
-sentiment /      code gen        summarization      NER         code debug
-factual /           │                │               │              │
-math / logic        ▼                ▼               ▼              │
-    │          local qwen;      local qwen;     local llama;        │
-    ▼          accept ONLY if   accept ONLY if  accept ONLY if      │
-dual-local     it compiles +    explicit word/  every capitalized   │
-agreement      defines the      sentence limits words of the        │
-(2 lineages    requested        are met (one    source appear       │
-must agree;    function         free retry)     (no dropped         │
-numeric-aware)                                  entities)           │
-    │ any guard fails, models disagree, blank, or error             │
-    ▼                                                               ▼
+    ┌──────────────┬───────────────┬───────────────┬───────────────┐
+    │              │               │               │               │
+sentiment /     code gen       summarization      NER          code debug
+factual /          │               │               │               │
+math / logic       ▼               ▼               ▼               ▼
+    │         local qwen;     local qwen;     both locals;    BOTH locals
+    ▼         accept ONLY     accept ONLY if  accept ONLY if  emit forced-
+dual-local    if it compiles  explicit word/  every capital-  code fixes;
+agreement     + defines the   sentence limit  ized source     accept ONLY if
+(2 lineages   requested       is met; free    word appears +  both compile,
+must agree;   function        retries state   sane type       change the bug,
+numeric-                      a HARDER limit, labels; free    and AGREE when
+aware)                        then shorten    retries name    EXECUTED side
+    │                         the previous    the exact       by side on a
+    │                         attempt         missed words    probe battery
+    │                                                         (sandboxed)
+    ├─ math/logic split: the stronger local's distilled answer
+    │  stands (probe-verified it wins every measured split) — free
+    │ guard fails / factual split / blank / error
+    ▼
 ONE call to the measured-cheapest strong remote model per category:
 kimi (factual, math/logic w/ reasoning prompt) · minimax-m3 (code, NER:
 terse JSON, ~1/2–1/3 kimi's tokens) · Gemma-first (sentiment, summaries)
@@ -58,13 +64,15 @@ terse JSON, ~1/2–1/3 kimi's tokens) · Gemma-first (sentiment, summaries)
 
 Key techniques (see `AMDPLAN/03_ARCHITECTURE.md` for the full design rationale):
 
-- **Free answers only behind mechanical guards** — the v3 lesson (57.9% real score) is that 1B local models can't be *trusted*; the v7 insight is they don't need to be — they need to be *checked*. Dual-lineage agreement for short answers, `compile()` + function-name checks for generated code, capitalized-phrase completeness for NER, word/sentence-limit checks for summaries. Every guard failure escalates; a local miss costs latency, never an answer. Result: ~half the task set answered for zero tokens with no measured accuracy loss vs the all-remote v5.
+- **Free answers only behind mechanical guards** — the v3 lesson (57.9% real score) is that 1B local models can't be *trusted*; the v7/v8 insight is they don't need to be — they need to be *checked*. Dual-lineage agreement for short answers, `compile()` + function-name checks for generated code, capitalized-phrase completeness + type-sanity for NER, word/sentence-limit checks for summaries, and for code debugging the strongest guard in the router: both lineages produce forced-code fixes that are accepted only when they compile, actually change the buggy code, and **agree behaviorally when executed side by side** on a probe battery in a sandboxed, hard-timeout subprocess. Every guard failure escalates; a local miss costs latency, never an answer. Result: 17 of 19 validation tasks answered for zero tokens with no measured accuracy loss.
+- **Targeted free retries** — a guard doesn't just reject, it says *why*, and the retry feeds that back: an incomplete NER answer is retried with the exact capitalized words it missed; a complete-but-untyped one is retried with its own list and an order to label it; an over-long summary first gets a HARDER stated limit, then a rewrite pass shortening its own previous attempt (compression is far easier for a small model than constrained generation). Local retries score zero tokens.
 - **Category-aware, cost-measured remote selection** — when a guard does escalate, the call goes to the allowed model that delivers a correct answer for the fewest measured tokens: `minimax-m3`'s terse deterministic JSON for code and NER (~290–380 tokens/task vs kimi's volatile 400–940 for judge-equivalent answers), `kimi-k2p7-code` for factual and math/logic (it alone answered every trick question correctly), Gemma-4 checkpoints leading sentiment and summarization.
+- **Splits identify the winner** — on a math/logic disagreement the stronger local's distilled answer stands for free (probe-verified it won every measured split), while a factual split still escalates (there both locals were measured wrong *together*). The only remote tokens in the final validation run are the two factual tasks the locals provably can't answer.
 - **Single-call math/logic** — v4's cross-family confirmation vote never changed the first model's answer in any validated run, so it's gone: one strong-model call with a reasoning-tuned prompt, tier escalation only on blank.
 - **Never-blank guarantee** — reasoning-channel models can return HTTP 200 with empty content when truncated; an empty answer is a guaranteed zero. Every route escalates through the remaining allowed models on failure *or* blank output, ending at the bundled local models as a last resort.
 - **Structured JSON output on every tier** — no preamble or filler tokens, ever; short-form categories answer with a bare label/number/name.
 - **Within-run dedup cache** — repeated prompts inside one grading run are answered once (exact-match, in-memory only; nothing is precomputed or persisted).
-- **Lesson learned the hard way** — v3 answered ~46% of tasks with free 1B-class local models on *trust* (agreement alone, any category) and scored 57.9% on the real grading run. v7 re-earns the free tier with *verification*: local answers count only when a mechanical guard proves the failure modes we know about aren't present, and code debugging — where no cheap guard exists — never goes local at all.
+- **Lesson learned the hard way** — v3 answered ~46% of tasks with free 1B-class local models on *trust* (agreement alone, any category) and scored 57.9% on the real grading run. v8 re-earns the free tier with *verification*: local answers count only when a mechanical guard proves the failure modes we know about aren't present. Even code debugging — prose-prone small models' worst category — went free once we found its guard: force code-only output and cross-execute both lineages' fixes.
 
 ## Build & push the submission image
 

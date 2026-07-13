@@ -1,19 +1,32 @@
 """The Tiered Calibrated Cascade router (03_ARCHITECTURE).
 
-Route order (strategy: cascade, v6 max-free revision):
+Route order (strategy: cascade, v8 min-token revision):
   1. within-run dedup cache      -> hit: return, 0 tokens
   2. category classifier         -> pick the plan per category:
-     - sentiment / factual /     -> dual-local agreement first (0 tokens);
-       math / logic                 disagreement, blank, or error escalates
-                                    to ONE strong-model call (reasoning
-                                    prompt + blank-proof cap for math/logic)
-     - summarization             -> single local summary (0 tokens), guarded
-                                    by a mechanical length-constraint check;
-                                    violations escalate remote Gemma-first
-     - code gen / debug / NER    -> minimax-first (terse JSON completions;
-                                    measured ~1/2 to 1/3 the billed tokens
-                                    of kimi for equal answers), kimi next
-                                    tier on blank/failure
+     - sentiment / factual       -> dual-local agreement first (0 tokens);
+                                    disagreement, blank, or error escalates
+                                    to ONE strong-model call
+     - math / logic              -> dual-local agreement first; on
+                                    disagreement the STRONGER local's
+                                    distilled answer stands (probe-verified
+                                    it wins every measured disagreement) —
+                                    remote only on blank/error
+     - summarization             -> local summary (0 tokens) behind a
+                                    mechanical length-constraint check, with
+                                    escalating free retries that restate the
+                                    limit; violations escalate Gemma-first
+     - NER                       -> local behind a completeness + type-
+                                    sanity guard, with a free hint-retry
+                                    naming the exact entities the first
+                                    attempt missed; failures go minimax-first
+     - code generation           -> local behind compile + function-name
+                                    guards; failures go minimax-first
+     - code debugging            -> BOTH locals produce forced-code fixes;
+                                    accepted only when both compile, both
+                                    change the buggy code, and the two fixes
+                                    agree BEHAVIORALLY (executed on a probe
+                                    battery in a sandboxed subprocess);
+                                    anything less goes minimax-first
   3. local models                -> emergency fallback ONLY (all remote
                                     tiers failed or returned blank)
 
@@ -23,11 +36,12 @@ has to clear the bar. The evolution: v3 let the local pair answer anything
 they agreed on and scored 57.9% (locals answering code/NER/hard-math is
 fatal); v4 sent everything remote with math voting (19/19, 8,618 tokens);
 v5 cut the never-dissenting vote and moved to measured-cheapest remote
-models (19/19, 4,603); v6 re-admits the free local tier — but ONLY in the
-categories the probe data shows agreement is trustworthy (short answers:
-sentiment/factual/math/logic) or a mechanical guard exists (summaries),
-never code or NER, and every doubt still escalates to the same strong
-remote path v5 validated.
+models (19/19, 4,603); v6/v7 re-admitted the free local tier behind hard
+mechanical guards (17/19, 2,646); v8 closes the remaining paid routes the
+probes proved the locals can win — behavioral dual-agreement on debug
+fixes, hint-retries on NER completeness, hard-budget retries on summary
+limits, stronger-local fallback on math/logic splits — leaving remote
+spend only where the locals are measurably wrong.
 
 Also implements the fallback strategies from 02_MVP_PLAN so every stage of
 the build is submittable: always_remote (v0), always_local (v1),
@@ -38,6 +52,8 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
+import sys
 import time
 from dataclasses import dataclass, field
 
@@ -51,6 +67,7 @@ from .confidence import (
 )
 from .models import (
     ANSWER_SYSTEM_PROMPT,
+    CODEDEBUG_FIX_SYSTEM_PROMPT,
     CODEDEBUG_SYSTEM_PROMPT,
     CODEGEN_SYSTEM_PROMPT,
     CRITIC_SYSTEM_PROMPT,
@@ -101,20 +118,131 @@ def _numbers_match(a: str, b: str) -> bool:
 _CAP_WORD_RE = re.compile(r"\b[A-Z][a-z]+")
 
 
-def _covers_capitalized_phrases(prompt: str, answer: str) -> bool:
-    """True when every mid-sentence capitalized word in the source text
-    (proper-noun candidates — sentence-initial words are skipped) appears in
+def _missing_capitalized_words(prompt: str, answer: str) -> list[str]:
+    """Mid-sentence capitalized words of the source text (proper-noun
+    candidates — sentence-initial words are skipped) that do NOT appear in
     the answer. This is the mechanical completeness gate for local NER:
     small models' failure mode is DROPPING entities, and a dropped entity
-    always drops its capitalized words."""
+    always drops its capitalized words. The list doubles as the hint for
+    the free local retry ('you missed: ...')."""
     lowered = answer.lower()
+    missing: list[str] = []
     for match in _CAP_WORD_RE.finditer(prompt):
         head = prompt[:match.start()].rstrip()
         if not head or head[-1] in ".!?:":
             continue  # sentence-initial word, not a proper-noun signal
-        if match.group(0).lower() not in lowered:
-            return False
-    return True
+        word = match.group(0)
+        if word.lower() not in lowered and word not in missing:
+            missing.append(word)
+    return missing
+
+
+def _covers_capitalized_phrases(prompt: str, answer: str) -> bool:
+    return not _missing_capitalized_words(prompt, answer)
+
+
+_ENTITY_TYPE_WORDS = {
+    "person", "people", "organization", "organisation", "company",
+    "location", "place", "city", "country", "date", "time", "event",
+    "product", "group",
+}
+
+
+def _has_sane_entity_types(answer: str) -> bool:
+    """A complete NER answer can still be judge-fatal if its type labels are
+    gibberish (observed live: a 1.5B labeling entities '(NP)', '(Pro)',
+    '(J)'). Require at least two recognizable type words before a local NER
+    answer counts."""
+    words = set(re.findall(r"[a-z]+", answer.lower()))
+    return len(words & _ENTITY_TYPE_WORDS) >= 2
+
+
+def _distill_short_answer(category: str | None, raw_text: str) -> str:
+    """Reduce a local model's possibly-verbose reasoning output to the short
+    answer a judge grades: the 'answer' JSON field when present, else the
+    final number of the work (math) or the concluding sentence (logic)."""
+    ans, work = extract_json_field(raw_text, "answer", "work")
+    text = str(ans if ans is not None else
+               (work if work is not None else raw_text)).strip()
+    if not text:
+        return ""
+    if category == "math":
+        nums = _NUMBER_RE.findall(text)
+        if nums:
+            return nums[-1]
+    sentences = [s for s in re.split(r"(?<=[.!?])\s+", text) if s.strip()]
+    return sentences[-1].strip() if sentences else text
+
+
+def _extract_code(text: str) -> str | None:
+    """The Python code portion of a model answer (or task prompt): from the
+    first import/from/class that precedes the first def, else from the
+    first def. None when there is no def at all."""
+    if "def " not in text:
+        return None
+    start = text.index("def ")
+    for prefix in ("import ", "from ", "class "):
+        idx = text.find(prefix)
+        if 0 <= idx < start:
+            start = idx
+    return text[start:]
+
+
+# Runs in a sandboxed subprocess (crash/hang isolation): loads both models'
+# fixes, then calls every function name they both define on a small battery
+# of generic probe inputs. Prints YES only when at least one call succeeded
+# on both fixes and every comparable call returned the same value.
+_BEHAVIOR_CHECK_SCRIPT = r"""
+import inspect, json, sys
+payload = json.loads(sys.stdin.read())
+
+def load(src):
+    ns = {}
+    exec(compile(src, "<fix>", "exec"), ns)
+    return {k: v for k, v in ns.items()
+            if callable(v) and not k.startswith("_")}
+
+try:
+    fa, fb = load(payload["a"]), load(payload["b"])
+except Exception:
+    print("NO"); sys.exit(0)
+BATTERY = {
+    1: [(3,), (7,), (0,), ("hello world",), ([3, 1, 2, 2],)],
+    2: [(3, 4), (10, 3), ("hello world", "o"), ([3, 1, 2], 2)],
+}
+agreed = 0
+for name in [k for k in fa if k in fb]:
+    try:
+        arity = len(inspect.signature(fa[name]).parameters)
+    except Exception:
+        continue
+    for args in BATTERY.get(arity, []):
+        try:
+            ra = fa[name](*args)
+        except Exception:
+            continue  # input outside this function's domain — skip
+        try:
+            rb = fb[name](*args)
+        except Exception:
+            print("NO"); sys.exit(0)  # one runs where the other crashes
+        if ra != rb:
+            print("NO"); sys.exit(0)
+        agreed += 1
+print("YES" if agreed else "NO")
+"""
+
+
+def _debug_fixes_agree(code_a: str, code_b: str) -> bool:
+    """Behavioral cross-check of two independent local fixes, executed in a
+    killable subprocess (a bad fix can loop forever — 8s hard timeout)."""
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-c", _BEHAVIOR_CHECK_SCRIPT],
+            input=json.dumps({"a": code_a, "b": code_b}),
+            capture_output=True, text=True, timeout=8)
+    except Exception:
+        return False
+    return proc.stdout.strip() == "YES"
 
 
 _FUNC_NAME_RE = re.compile(r"(?:called|named)\s+`?(\w+)\s*\(", re.IGNORECASE)
@@ -299,6 +427,8 @@ class RoutingAgent:
             return self._local_ner(task, features)
         if category == "code_generation":
             return self._local_codegen(task, features)
+        if category == "code_debugging":
+            return self._local_codedebug(task, features)
         if category in _LONGFORM:
             return self._remote_longform(task, category, features)
         system = _LOCAL_PROMPTS.get(category, ANSWER_SYSTEM_PROMPT)
@@ -315,9 +445,17 @@ class RoutingAgent:
         plus a single-number match so '1989' agrees with '{"year": 1989}').
         Agreement between independent lineages is a genuine signal on short
         answers; any disagreement, error, or blank escalates to the remote
-        path, so a local miss costs latency, never an answer."""
+        path, so a local miss costs latency, never an answer.
+
+        Exception (v8): on a math/logic split the STRONGER local's distilled
+        answer stands instead of paying for a remote call — in every
+        measured disagreement on the validation set the 1.5B was right and
+        the 1B wrong, so the split itself identifies which model to trust.
+        Factual splits still escalate: there both locals were measured wrong
+        together, so the split means neither can be trusted."""
         local_tokens = 0
-        answers = []
+        answers: list[str] = []
+        raws: list[str] = []
         for client, model in ((self._local_a, self.cfg.local.model_a),
                               (self._local_b, self.cfg.local.model_b)):
             try:
@@ -329,6 +467,7 @@ class RoutingAgent:
                 features["local_error"] = str(exc)[:200]
                 break
             local_tokens += resp.total_tokens
+            raws.append(resp.text)
             answers.append(str(extract_json_field(resp.text, "answer")
                                or resp.text.strip()))
         if len(answers) == 2 and normalize_answer(answers[0]):
@@ -344,6 +483,14 @@ class RoutingAgent:
                                 local_tokens=local_tokens, latency_s=0.0,
                                 features=features)
         features["local_disagreement"] = answers
+        if kind == "reasoning" and len(answers) == 2:
+            answer = _distill_short_answer(features.get("category"), raws[1])
+            if normalize_answer(answer):
+                self.cache.store(task.prompt, answer)
+                return Decision(task.id, task.prompt, f"local_{kind}_solo",
+                                answer, remote_tokens=0,
+                                local_tokens=local_tokens, latency_s=0.0,
+                                features=features)
         route_cat = "math" if kind == "reasoning" else kind
         decision = self._remote_single(task, remote_system,
                                        f"remote_{kind}", features,
@@ -357,13 +504,28 @@ class RoutingAgent:
         1.5B) writes the summary. Long-form answers can't be cross-checked
         by string agreement, so the guard is constraint compliance instead:
         an explicit word limit or one-sentence requirement in the task is
-        checked mechanically. A violation gets ONE free local retry with the
-        limit spelled out; a second violation, blank, or error escalates to
-        the remote (Gemma-first) path."""
+        checked mechanically. A violation gets free local retries with the
+        limit restated ever harder: first the limit spelled out, then a
+        hard budget BELOW the task's limit, and finally a rewrite pass that
+        asks the model to SHORTEN its own previous answer — compressing an
+        existing sentence is far easier for a small model than regenerating
+        under a limit. Retries cost local tokens only (score zero); a final
+        violation, blank, or error escalates to the remote (Gemma-first)
+        path."""
         local_tokens = 0
+        limit = _WORD_LIMIT_RE.search(task.prompt)
+        budget = max(int(limit.group(1)) - 3, 5) if limit else None
         prompts = [task.prompt,
                    task.prompt + "\nIMPORTANT: obey the length limit "
                                  "EXACTLY — count your words."]
+        if budget:
+            prompts.append(task.prompt + f"\nHARD RULE: your summary must "
+                                         f"be {budget} words or fewer. "
+                                         "Count every word.")
+        elif _ONE_SENTENCE_RE.search(task.prompt):
+            prompts.append(task.prompt + "\nHARD RULE: reply with EXACTLY "
+                                         "ONE sentence.")
+        last_answer = ""
         for attempt, user in enumerate(prompts):
             try:
                 resp = self._local_chat(self._local_b,
@@ -384,6 +546,14 @@ class RoutingAgent:
                                 remote_tokens=0, local_tokens=local_tokens,
                                 latency_s=0.0, features=features)
             features[f"local_rejected_{attempt + 1}"] = answer[:200]
+            if answer and len(answer) >= 20:
+                last_answer = answer
+            if (budget and last_answer
+                    and attempt == len(prompts) - 1 and len(prompts) < 5):
+                prompts.append(  # rewrite pass: shorten the previous try
+                    f"Shorten this to at most {budget} words, keeping the "
+                    f"main point. Reply with the shortened text only:\n"
+                    f"{last_answer}")
         decision = self._remote_single(task, SUMMARY_SYSTEM_PROMPT,
                                        "remote_summarization", features,
                                        max_tokens=800,
@@ -427,29 +597,116 @@ class RoutingAgent:
         decision.local_tokens = local_tokens
         return decision
 
+    def _local_codedebug(self, task: Task, features: dict) -> Decision:
+        """Free tier for code DEBUGGING (v8). Asking a small model to
+        'identify and fix' yields prose about the bug; forcing code-only
+        output yields an actual fix — which unlocks the strongest guard in
+        the router: BOTH local lineages produce a fix, and the fixes are
+        accepted only when each compiles, each actually changes the buggy
+        code, and the two independently-written fixes agree BEHAVIORALLY
+        when executed side by side on a probe battery (sandboxed subprocess,
+        hard timeout). Two independent models converging on the same
+        input/output behavior is far stronger evidence than either model's
+        word. Anything less escalates to the remote (minimax-first) path."""
+        buggy = _extract_code(task.prompt)
+        local_tokens = 0
+        fixes: list[str] = []
+        if buggy is not None:
+            buggy_norm = "".join(buggy.split())
+            for client, model in ((self._local_a, self.cfg.local.model_a),
+                                  (self._local_b, self.cfg.local.model_b)):
+                try:
+                    resp = client.chat(model, CODEDEBUG_FIX_SYSTEM_PROMPT,
+                                       task.prompt, max_tokens=500,
+                                       temperature=self.cfg.local.temperature)
+                except Exception as exc:
+                    features["local_error"] = str(exc)[:200]
+                    break
+                local_tokens += resp.total_tokens
+                answer = str(extract_json_field(resp.text, "answer")
+                             or resp.text.strip())
+                code = _extract_code(answer)
+                if code is None or "".join(code.split()) == buggy_norm:
+                    features[f"local_rejected_{model}"] = answer[:150]
+                    break  # no code, or returned the bug unchanged
+                try:
+                    compile(code, "<local-debug>", "exec")
+                except SyntaxError:
+                    features[f"local_rejected_{model}"] = answer[:150]
+                    break
+                fixes.append(code)
+        if len(fixes) == 2 and _debug_fixes_agree(fixes[0], fixes[1]):
+            answer = fixes[1]  # the stronger local's phrasing of the fix
+            self.cache.store(task.prompt, answer)
+            features["behavioral_agreement"] = True
+            return Decision(task.id, task.prompt, "local_code_debugging",
+                            answer, remote_tokens=0,
+                            local_tokens=local_tokens, latency_s=0.0,
+                            features=features)
+        system, budget = _LONGFORM["code_debugging"]
+        decision = self._remote_single(task, system,
+                                       "remote_code_debugging", features,
+                                       max_tokens=budget,
+                                       category="code_debugging")
+        decision.local_tokens = local_tokens
+        return decision
+
     def _local_ner(self, task: Task, features: dict) -> Decision:
         """Free tier for NER, guarded by mechanical COMPLETENESS: the one
         failure mode of small models on NER is silently dropping entities
-        (observed live: a 1B dropping 'Tim Cook'), so the local answer is
+        (observed live: a 1B dropping 'Tim Cook'), so a local answer is
         accepted only if every capitalized phrase in the source text
-        reappears in it. Judges grade NER on completeness; an answer that
-        provably names every candidate is safe to take for free, and
-        anything less escalates to the remote (minimax-first) path."""
-        try:
-            resp = self._local_chat(self._local_a, self.cfg.local.model_a,
-                                    NER_SYSTEM_PROMPT, task.prompt)
-            answer = str(extract_json_field(resp.text, "answer")
-                         or resp.text.strip())
-            local_tokens = resp.total_tokens
-        except Exception as exc:
-            features["local_error"] = str(exc)[:200]
-            answer, local_tokens = "", 0
-        if answer and _covers_capitalized_phrases(task.prompt, answer):
-            self.cache.store(task.prompt, answer)
-            return Decision(task.id, task.prompt, "local_ner", answer,
-                            remote_tokens=0, local_tokens=local_tokens,
-                            latency_s=0.0, features=features)
-        features["local_incomplete"] = answer[:200]
+        reappears in it — plus a type-sanity check, because a 'complete'
+        answer whose type labels are gibberish still fails a judge.
+
+        v8: a rejected attempt gets targeted free retries — an incomplete
+        answer is retried with the exact capitalized words it missed
+        (probe-verified this recovers dropped entities); a complete but
+        untyped/garbage-typed answer is retried with its own name list and
+        an order to label each one. Both local lineages get a turn before
+        any remote call. Local attempts cost zero; only a full local
+        failure pays for the remote (minimax-first) path."""
+        local_tokens = 0
+        for client, model in ((self._local_a, self.cfg.local.model_a),
+                              (self._local_b, self.cfg.local.model_b)):
+            user = task.prompt
+            for attempt in range(3):
+                try:
+                    resp = client.chat(model, NER_SYSTEM_PROMPT, user,
+                                       max_tokens=300,
+                                       temperature=self.cfg.local.temperature)
+                except Exception as exc:
+                    features["local_error"] = str(exc)[:200]
+                    break
+                local_tokens += resp.total_tokens
+                answer = str(extract_json_field(resp.text, "answer")
+                             or resp.text.strip())
+                if not answer:
+                    break
+                missing = _missing_capitalized_words(task.prompt, answer)
+                if not missing and _has_sane_entity_types(answer):
+                    features["local_model"] = model
+                    features["local_attempts"] = attempt + 1
+                    self.cache.store(task.prompt, answer)
+                    return Decision(task.id, task.prompt, "local_ner",
+                                    answer, remote_tokens=0,
+                                    local_tokens=local_tokens,
+                                    latency_s=0.0, features=features)
+                features[f"local_rejected_{model}_{attempt + 1}"] = answer[:150]
+                if missing:
+                    user = (task.prompt +
+                            "\nYour previous answer MISSED these names "
+                            f"from the text: {', '.join(missing)}. List "
+                            "EVERY named entity including those, each with "
+                            "its type (person, organization, location, "
+                            "date, event, or product).")
+                else:  # complete but untyped — relabel its own list
+                    user = (task.prompt +
+                            f"\nThese are the entities: {answer}\n"
+                            "Answer again with these SAME names, labelling "
+                            "each with its type, in the form: "
+                            "Entity (person); Entity (organization); "
+                            "Entity (location); Entity (date); ...")
         decision = self._remote_single(task, NER_SYSTEM_PROMPT,
                                        "remote_ner", features,
                                        max_tokens=800, category="ner")
