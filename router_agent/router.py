@@ -117,6 +117,33 @@ def _covers_capitalized_phrases(prompt: str, answer: str) -> bool:
     return True
 
 
+_FUNC_NAME_RE = re.compile(r"(?:called|named)\s+`?(\w+)\s*\(", re.IGNORECASE)
+
+
+def _code_passes_guards(prompt: str, answer: str) -> bool:
+    """Mechanical acceptance test for locally generated code: it must
+    contain a definition, compile as Python (the default/overwhelmingly
+    requested language here), and define the function name when the task
+    names one. Non-Python requests fail the compile check and escalate —
+    conservative by design."""
+    if "def " not in answer or len(answer) < 20:
+        return False
+    code = answer[answer.index("def "):]
+    for prefix in ("import", "from", "class"):
+        idx = answer.find(prefix + " ")
+        if 0 <= idx < answer.index("def "):
+            code = answer[idx:]
+            break
+    try:
+        compile(code, "<local-codegen>", "exec")
+    except SyntaxError:
+        return False
+    m = _FUNC_NAME_RE.search(prompt)
+    if m and f"def {m.group(1)}" not in answer:
+        return False
+    return True
+
+
 _WORD_LIMIT_RE = re.compile(
     r"(?:no more than|at most|maximum of|max(?:imum)?|in|within|under)\s+"
     r"(\d+)\s+words", re.IGNORECASE)
@@ -270,6 +297,8 @@ class RoutingAgent:
             return self._local_summary(task, features)
         if category == "ner":
             return self._local_ner(task, features)
+        if category == "code_generation":
+            return self._local_codegen(task, features)
         if category in _LONGFORM:
             return self._remote_longform(task, category, features)
         system = _LOCAL_PROMPTS.get(category, ANSWER_SYSTEM_PROMPT)
@@ -359,6 +388,42 @@ class RoutingAgent:
                                        "remote_summarization", features,
                                        max_tokens=800,
                                        category="summarization")
+        decision.local_tokens = local_tokens
+        return decision
+
+    def _local_codegen(self, task: Task, features: dict) -> Decision:
+        """Free tier for code GENERATION, guarded mechanically: the local
+        answer is accepted only if it (a) actually compiles and (b) defines
+        the function name the task asks for. A 1.5B model writes correct
+        code for the straightforward functions these tasks ask for, and
+        compile + name checks filter the failure modes we can detect
+        without a judge; anything doubtful escalates to the remote
+        (minimax-first) path. Code DEBUGGING stays remote: the same local
+        model describes the bug without emitting the corrected code, which
+        an intent judge fails."""
+        try:
+            resp = self._local_b.chat(self.cfg.local.model_b,
+                                      CODEGEN_SYSTEM_PROMPT, task.prompt,
+                                      max_tokens=600,
+                                      temperature=self.cfg.local.temperature)
+            answer = str(extract_json_field(resp.text, "answer")
+                         or resp.text.strip())
+            local_tokens = resp.total_tokens
+        except Exception as exc:
+            features["local_error"] = str(exc)[:200]
+            answer, local_tokens = "", 0
+        if answer and _code_passes_guards(task.prompt, answer):
+            self.cache.store(task.prompt, answer)
+            return Decision(task.id, task.prompt, "local_code_generation",
+                            answer, remote_tokens=0,
+                            local_tokens=local_tokens, latency_s=0.0,
+                            features=features)
+        features["local_rejected"] = answer[:200]
+        system, budget = _LONGFORM["code_generation"]
+        decision = self._remote_single(task, system,
+                                       "remote_code_generation", features,
+                                       max_tokens=budget,
+                                       category="code_generation")
         decision.local_tokens = local_tokens
         return decision
 
