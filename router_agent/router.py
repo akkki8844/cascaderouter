@@ -6,10 +6,12 @@ Route order (strategy: cascade, v8 min-token revision):
      - sentiment / factual       -> dual-local agreement first (0 tokens);
                                     disagreement, blank, or error escalates
                                     to ONE strong-model call
-     - math / logic              -> dual-local agreement first; on
-                                    disagreement the STRONGER local's
-                                    distilled answer stands (probe-verified
-                                    it wins every measured disagreement) —
+     - math / logic              -> ONE call to the stronger local (1.5B),
+                                    distilled to the short final answer
+                                    (v8 probe data: it won every measured
+                                    disagreement, so the second local call
+                                    bought no information — and CPU time is
+                                    the scarce resource on the grading VM) —
                                     remote only on blank/error
      - summarization             -> local summary (0 tokens) behind a
                                     mechanical length-constraint check, with
@@ -316,6 +318,47 @@ _BUDGET_COMPLETION: dict[str, tuple[int, int]] = {
 _BUDGET_COMPLETION_DEFAULT = (160, 48)  # short answers: factual/sentiment/etc.
 
 
+class TimeGovernor:
+    """Run-wide WALL-CLOCK pacing (v10). The grading VM is 2 vCPU / 4 GB and
+    kills the container at 10 minutes — the 2026-07-13 resubmission TIMED OUT
+    there while the same run takes 70s on a GPU dev box, so CPU-slow local
+    inference must be paced against a hard deadline, not assumed cheap.
+
+    Mode is derived from time-left per task-left:
+      normal   — full v9 guard behavior (retries, dual-lineage checks)
+      tight    — one attempt per guard, no retry ladders
+      critical — skip local-first entirely: one fast remote call (seconds),
+                 budget refusal falls to a short local draft
+    call_timeout() additionally shrinks any single request's timeout so one
+    hung call can never eat what's left of the run."""
+
+    def __init__(self, deadline: float, total_tasks: int):
+        self.deadline = deadline
+        self.total = max(total_tasks, 1)
+        self._done = 0
+        self._lock = threading.Lock()
+
+    def task_done(self) -> None:
+        with self._lock:
+            self._done += 1
+
+    def remaining(self) -> float:
+        return self.deadline - time.time()
+
+    def mode(self) -> str:
+        with self._lock:
+            tasks_left = max(self.total - self._done, 1)
+        allowance = self.remaining() / tasks_left
+        if allowance >= 24.0:
+            return "normal"
+        if allowance >= 10.0:
+            return "tight"
+        return "critical"
+
+    def call_timeout(self, base: float) -> float:
+        return max(4.0, min(base, self.remaining() - 8.0))
+
+
 class _RemoteBudget:
     """Hard run-wide ceiling on billed Fireworks tokens (leaderboard rank is
     ascending remote tokens — this converts 'probably cheap' into 'cannot
@@ -404,6 +447,20 @@ class RoutingAgent:
                                cfg.cache.persist)
         self._budget = _RemoteBudget(
             getattr(cfg.router, "remote_token_budget", 0))
+        # Wall-clock pacing — set by the harness (TimeGovernor); None (local
+        # dev / tests) means no deadline and full "normal" behavior always.
+        self.governor: TimeGovernor | None = None
+
+    def _mode(self) -> str:
+        return self.governor.mode() if self.governor else "normal"
+
+    def _local_timeout(self) -> float:
+        base = self.cfg.local.request_timeout or 60.0
+        return self.governor.call_timeout(base) if self.governor else base
+
+    def _remote_timeout(self) -> float:
+        base = self.cfg.remote.request_timeout or 60.0
+        return self.governor.call_timeout(base) if self.governor else base
 
     # ---------- public API ----------
 
@@ -475,6 +532,14 @@ class RoutingAgent:
 
         category = classify_category(task.prompt)
         features["category"] = category
+        mode = self._mode()
+        features["pacing"] = mode
+        if mode == "critical":
+            # Out of wall-clock room for CPU-slow local inference: one fast
+            # remote call decides the task (seconds, not tens of seconds).
+            # A budget refusal inside _remote_single still falls back to a
+            # short local draft — scored-but-imperfect beats TIMEOUT.
+            return self._critical_fast(task, category, features)
         if category == "sentiment":
             return self._local_pair_first(task, features, "sentiment",
                                           SENTIMENT_SYSTEM_PROMPT,
@@ -485,17 +550,7 @@ class RoutingAgent:
                                           ANSWER_SYSTEM_PROMPT, 800)
         if category in ("math", "logic"):
             features["computational"] = True
-            # v5 dropped the remote confirmation vote (it never changed the
-            # first model's answer in any validated run; the reasoning model
-            # was measured WRONG on a trick question the general model got
-            # right). v6 puts the free pair in front: agreement on a bare
-            # number between two 1B lineages is right more often than not,
-            # and every disagreement still escalates to the strong model
-            # with the reasoning prompt and blank-proof 1200 cap.
-            return self._local_pair_first(
-                task, features, "reasoning",
-                REASONING_ANSWER_SYSTEM_PROMPT, REASONING_ANSWER_SYSTEM_PROMPT,
-                max(self.cfg.remote.max_tokens, 1200), local_max_tokens=400)
+            return self._local_reasoning(task, features)
         if category == "summarization":
             return self._local_summary(task, features)
         if category == "ner":
@@ -520,29 +575,21 @@ class RoutingAgent:
         plus a single-number match so '1989' agrees with '{"year": 1989}').
         Agreement between independent lineages is a genuine signal on short
         answers; any disagreement, error, or blank escalates to the remote
-        path, so a local miss costs latency, never an answer.
-
-        Exception (v8): on a math/logic split the STRONGER local's distilled
-        answer stands instead of paying for a remote call — in every
-        measured disagreement on the validation set the 1.5B was right and
-        the 1B wrong, so the split itself identifies which model to trust.
-        Factual splits still escalate: there both locals were measured wrong
-        together, so the split means neither can be trusted."""
+        path, so a local miss costs latency, never an answer."""
         local_tokens = 0
         answers: list[str] = []
-        raws: list[str] = []
         for client, model in ((self._local_a, self.cfg.local.model_a),
                               (self._local_b, self.cfg.local.model_b)):
             try:
                 resp = client.chat(model, local_system, task.prompt,
                                    max_tokens=(local_max_tokens
                                                or self.cfg.local.max_tokens),
-                                   temperature=self.cfg.local.temperature)
+                                   temperature=self.cfg.local.temperature,
+                                   timeout=self._local_timeout())
             except Exception as exc:
                 features["local_error"] = str(exc)[:200]
                 break
             local_tokens += resp.total_tokens
-            raws.append(resp.text)
             answers.append(str(extract_json_field(resp.text, "answer")
                                or resp.text.strip()))
         if len(answers) == 2 and normalize_answer(answers[0]):
@@ -558,21 +605,69 @@ class RoutingAgent:
                                 local_tokens=local_tokens, latency_s=0.0,
                                 features=features)
         features["local_disagreement"] = answers
-        if kind == "reasoning" and len(answers) == 2:
-            answer = _distill_short_answer(features.get("category"), raws[1])
-            if normalize_answer(answer):
-                self.cache.store(task.prompt, answer)
-                return Decision(task.id, task.prompt, f"local_{kind}_solo",
-                                answer, remote_tokens=0,
-                                local_tokens=local_tokens, latency_s=0.0,
-                                features=features)
-        route_cat = "math" if kind == "reasoning" else kind
         decision = self._remote_single(task, remote_system,
                                        f"remote_{kind}", features,
                                        max_tokens=remote_max,
-                                       category=route_cat)
+                                       category=kind)
         decision.local_tokens = local_tokens
         return decision
+
+    def _local_reasoning(self, task: Task, features: dict) -> Decision:
+        """Free tier for math/logic (v10): ONE call to the stronger local
+        (qwen2.5 1.5B), distilled to the short final answer. v8 ran BOTH
+        locals and measured that on every disagreement the 1.5B was right —
+        meaning the final answer always equaled the 1.5B's whether or not
+        the 1B agreed. The 1B call bought no information while being the
+        single largest slice of local CPU time (5 of 19 tasks × a 400-token
+        reasoning generation), which is what timed the container out on the
+        2-vCPU grading VM. Blank or error escalates to the strong remote
+        model with the blank-proof cap."""
+        local_tokens = 0
+        answer = ""
+        try:
+            resp = self._local_b.chat(self.cfg.local.model_b,
+                                      REASONING_ANSWER_SYSTEM_PROMPT,
+                                      task.prompt, max_tokens=320,
+                                      temperature=self.cfg.local.temperature,
+                                      timeout=self._local_timeout())
+            local_tokens = resp.total_tokens
+            answer = _distill_short_answer(features.get("category"),
+                                           resp.text)
+        except Exception as exc:
+            features["local_error"] = str(exc)[:200]
+        if normalize_answer(answer):
+            self.cache.store(task.prompt, answer)
+            return Decision(task.id, task.prompt, "local_reasoning_solo",
+                            answer, remote_tokens=0,
+                            local_tokens=local_tokens, latency_s=0.0,
+                            features=features)
+        decision = self._remote_single(
+            task, REASONING_ANSWER_SYSTEM_PROMPT, "remote_reasoning",
+            features, max_tokens=max(self.cfg.remote.max_tokens, 1200),
+            category="math")
+        decision.local_tokens = local_tokens
+        return decision
+
+    def _critical_fast(self, task: Task, category: str | None,
+                       features: dict) -> Decision:
+        """Wall-clock emergency path: the deadline governor says there is no
+        room left for CPU-slow local attempts, so the task takes one fast
+        remote call with the category's own prompt. Budget refusals inside
+        _remote_single fall through to a short local draft."""
+        if category in _LONGFORM:
+            system, budget = _LONGFORM[category]
+        elif category in ("math", "logic"):
+            system, budget = (REASONING_ANSWER_SYSTEM_PROMPT,
+                              max(self.cfg.remote.max_tokens, 1200))
+            category = "math"
+        elif category == "sentiment":
+            system, budget = SENTIMENT_SYSTEM_PROMPT, 800
+        else:
+            system, budget = ANSWER_SYSTEM_PROMPT, 800
+        return self._remote_single(task, system,
+                                   f"remote_{category or 'generic'}",
+                                   features, max_tokens=budget,
+                                   category=category)
 
     def _local_summary(self, task: Task, features: dict) -> Decision:
         """Free tier for summarization: the stronger local model (qwen2.5
@@ -600,6 +695,8 @@ class RoutingAgent:
         elif _ONE_SENTENCE_RE.search(task.prompt):
             prompts.append(task.prompt + "\nHARD RULE: reply with EXACTLY "
                                          "ONE sentence.")
+        if self._mode() != "normal":
+            prompts = prompts[:1]  # wall-clock pressure: no retry ladder
         last_answer = ""
         for attempt, user in enumerate(prompts):
             try:
@@ -623,7 +720,7 @@ class RoutingAgent:
             features[f"local_rejected_{attempt + 1}"] = answer[:200]
             if answer and len(answer) >= 20:
                 last_answer = answer
-            if (budget and last_answer
+            if (budget and last_answer and self._mode() == "normal"
                     and attempt == len(prompts) - 1 and len(prompts) < 5):
                 prompts.append(  # rewrite pass: shorten the previous try
                     f"Shorten this to at most {budget} words, keeping the "
@@ -649,8 +746,10 @@ class RoutingAgent:
         try:
             resp = self._local_b.chat(self.cfg.local.model_b,
                                       CODEGEN_SYSTEM_PROMPT, task.prompt,
-                                      max_tokens=600,
-                                      temperature=self.cfg.local.temperature)
+                                      max_tokens=(400 if self._mode() ==
+                                                  "normal" else 320),
+                                      temperature=self.cfg.local.temperature,
+                                      timeout=self._local_timeout())
             answer = str(extract_json_field(resp.text, "answer")
                          or resp.text.strip())
             local_tokens = resp.total_tokens
@@ -686,14 +785,19 @@ class RoutingAgent:
         buggy = _extract_code(task.prompt)
         local_tokens = 0
         fixes: list[str] = []
-        if buggy is not None:
+        # The dual-fix guard needs TWO local generations — the most expensive
+        # local pattern in the router. Under wall-clock pressure the task
+        # skips straight to remote instead (fast, and minimax debug answers
+        # are cheap) rather than risk the whole run's deadline.
+        if buggy is not None and self._mode() == "normal":
             buggy_norm = "".join(buggy.split())
             for client, model in ((self._local_a, self.cfg.local.model_a),
                                   (self._local_b, self.cfg.local.model_b)):
                 try:
                     resp = client.chat(model, CODEDEBUG_FIX_SYSTEM_PROMPT,
-                                       task.prompt, max_tokens=500,
-                                       temperature=self.cfg.local.temperature)
+                                       task.prompt, max_tokens=400,
+                                       temperature=self.cfg.local.temperature,
+                                       timeout=self._local_timeout())
                 except Exception as exc:
                     features["local_error"] = str(exc)[:200]
                     break
@@ -745,11 +849,16 @@ class RoutingAgent:
         for client, model in ((self._local_a, self.cfg.local.model_a),
                               (self._local_b, self.cfg.local.model_b)):
             user = task.prompt
-            for attempt in range(3):
+            # Validation needs the full ladder: both NER eval tasks pass on
+            # a model's 3rd attempt (receipts in git: local_attempts=3), and
+            # a local pass saves a ~300-token remote call that can starve
+            # the budget. Under wall-clock pressure each model gets one shot.
+            for attempt in range(3 if self._mode() == "normal" else 1):
                 try:
                     resp = client.chat(model, NER_SYSTEM_PROMPT, user,
                                        max_tokens=300,
-                                       temperature=self.cfg.local.temperature)
+                                       temperature=self.cfg.local.temperature,
+                                       timeout=self._local_timeout())
                 except Exception as exc:
                     features["local_error"] = str(exc)[:200]
                     break
@@ -865,7 +974,8 @@ class RoutingAgent:
                 resp = self._remote.chat(
                     tier_model, system, task.prompt,
                     max_tokens=want,
-                    temperature=self.cfg.remote.temperature)
+                    temperature=self.cfg.remote.temperature,
+                    timeout=self._remote_timeout())
             except Exception as exc:
                 # A fast failure (404 model, refused connection) bills
                 # nothing; a timeout MAY have generated server-side, so its
@@ -895,11 +1005,15 @@ class RoutingAgent:
 
     def _local_last_resort(self, task: Task, system: str,
                            features: dict) -> str:
-        """Free local draft, used ONLY when every remote tier failed or came
-        back blank — a plausible local answer beats a certain-zero blank."""
+        """Free local draft, used ONLY when every remote tier failed, came
+        back blank, or was refused by the budget — a plausible local answer
+        beats a certain-zero blank. Under wall-clock pressure the draft is
+        clamped short so it can't endanger the deadline."""
         try:
-            resp = self._local_chat(self._local_a, self.cfg.local.model_a,
-                                    system, task.prompt)
+            resp = self._local_chat(
+                self._local_a, self.cfg.local.model_a, system, task.prompt,
+                max_tokens=(64 if self._mode() == "critical"
+                            else self.cfg.local.max_tokens))
             return str(extract_json_field(resp.text, "answer")
                        or resp.text.strip())
         except Exception as exc:
@@ -908,10 +1022,12 @@ class RoutingAgent:
 
     # ---------- plumbing ----------
 
-    def _local_chat(self, client, model, system, user):
+    def _local_chat(self, client, model, system, user,
+                    max_tokens: int | None = None):
         return client.chat(model, system, user,
-                           max_tokens=self.cfg.local.max_tokens,
-                           temperature=self.cfg.local.temperature)
+                           max_tokens=max_tokens or self.cfg.local.max_tokens,
+                           temperature=self.cfg.local.temperature,
+                           timeout=self._local_timeout())
 
     def _remote_chat(self, model, system, user):
         return self._remote.chat(model, system, user,

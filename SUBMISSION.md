@@ -11,7 +11,7 @@ Copy-paste content for the lablab.ai submission form. Team: **Veritas**
 
 ## Short Description (one-liner)
 
-A routing agent that answers every task with the cheapest source that can be mechanically verified — free local models behind compile checks, dual-model agreement, behavioral cross-execution of code fixes, and completeness guards with targeted free retries — plus a hard run-wide budget that makes it IMPOSSIBLE to bill more than 480 remote tokens on any task set. Validated live at 89.5% with 17 of 19 tasks answered for ZERO tokens (375 total remote tokens).
+A routing agent that answers every task with the cheapest source that can be mechanically verified — free local models behind compile checks, dual-model agreement, behavioral cross-execution of code fixes, and completeness guards with targeted free retries — plus TWO hard run-wide ceilings: a token budget that makes billing more than 480 remote tokens IMPOSSIBLE on any task set, and a wall-clock deadline governor that makes finishing inside the 10-minute container limit equally guaranteed. Validated live at 89.5% with 17 of 19 tasks answered for ZERO tokens (347 total remote tokens).
 
 ## Long Description
 
@@ -36,13 +36,16 @@ specific to the category's known failure mode — and a rejected attempt gets
   model's word.
 - **Code generation** → local answer accepted only if it *compiles* and
   defines the exact function the task names.
-- **Sentiment, factual, math & logic** → accepted when two local models
-  from *different training lineages* (Llama 3.2 1B + Qwen2.5 1.5B) agree on
-  the short answer (numeric-aware matching, so `1989` agrees with
-  `{"year": 1989}`). On a math/logic split the stronger local's distilled
-  answer stands (probe-verified it won every measured split); a factual
-  split still escalates, because there the locals were measured wrong
+- **Sentiment & factual** → accepted when two local models from *different
+  training lineages* (Llama 3.2 1B + Qwen2.5 1.5B) agree on the short
+  answer (numeric-aware matching, so `1989` agrees with `{"year": 1989}`).
+  A factual split escalates, because there the locals were measured wrong
   *together*.
+- **Math & logic** → one call to the stronger local, distilled to the bare
+  final answer. We measured (v8) that on every disagreement between the two
+  locals the 1.5B was right — so the final answer always equaled the
+  1.5B's, and the second model call bought no information while costing
+  the largest slice of CPU time on the 2-vCPU grading VM.
 - **NER** → accepted only if every capitalized phrase of the source text
   reappears in the answer with sane type labels; an incomplete attempt is
   retried with the exact words it missed, an untyped one with its own list
@@ -51,14 +54,30 @@ specific to the category's known failure mode — and a rejected attempt gets
   mechanically satisfied; retries state a harder limit, then a rewrite pass
   shortens the model's own previous attempt.
 
-On top of the guards sits a **hard remote-token budget**: every remote call
-must first reserve its worst case (over-counted prompt estimate plus the
-full completion cap, which `max_tokens` hard-bounds) against a thread-safe
-run-wide ceiling of 480 billed Fireworks tokens. A call that doesn't fit is
-never made — the task takes the free local answer instead. The number the
-leaderboard ranks by is therefore **bounded by construction, no matter what
-the hidden task set looks like**; a worst-case drill with the budget forced
-to 1 token completed the full run at 78.9% and exactly 0 remote tokens.
+On top of the guards sit **two hard run-wide ceilings**. First, a remote-
+token budget: every remote call must first reserve its worst case
+(over-counted prompt estimate plus the full completion cap, which
+`max_tokens` hard-bounds) against a thread-safe run-wide ceiling of 480
+billed Fireworks tokens. A call that doesn't fit is never made — the task
+takes the free local answer instead. The number the leaderboard ranks by is
+therefore **bounded by construction, no matter what the hidden task set
+looks like**; a worst-case drill with the budget forced to 1 token
+completed the full run at 78.9% and exactly 0 remote tokens.
+
+Second, a **wall-clock deadline governor**: the grading VM (2 vCPU / 4 GB)
+kills containers at 10 minutes, and local 1B inference there runs ~10×
+slower than on a GPU dev box — we learned this from a real resubmission
+that TIMED OUT. The run is now paced against a hard deadline: tasks execute
+factual-first then descending local-cost (budget-critical escalations
+reserve first; any degraded tail is the cheapest-remote tasks), the router
+steps down from full guards → no retry ladders → one fast remote call as
+time-per-remaining-task shrinks, `results.json` is atomically rewritten
+after EVERY task, and a watchdog flushes and exits cleanly before the kill.
+A drill with the wall clock forced to 55 seconds still produced a complete,
+valid, budget-respecting results file — a partial score always beats
+TIMEOUT. Ollama is pinned to keep both bundled models resident and decode
+one request at a time (parallel decode on 2 cores only adds timeout risk),
+with both models warmed at startup.
 
 Every guard failure escalates to **one call to the measured-cheapest strong
 remote model for that category** — we priced every category on every allowed
@@ -74,19 +93,20 @@ emits structured JSON; a within-run dedup cache answers repeated prompts once
 
 The submission is a single self-contained ~4 GB linux/amd64 image: agent +
 Ollama + both local models baked into the layers. It reads
-`/input/tasks.json`, writes `/output/results.json`, honors all env vars, runs
-tasks on a worker pool with 25 s per-request timeouts, and degrades gracefully
-(any tier dies → next tier; a single bad task → empty answer, never a crashed
-batch).
+`/input/tasks.json`, writes `/output/results.json` after every task, honors
+all env vars, bounds every request with deadline-aware timeouts, and degrades
+gracefully (any tier dies → next tier; a single bad task → empty answer,
+never a crashed batch).
 
 Validation on the real Fireworks API, on a 19-task set mirroring the grading
-distribution: **17/19 correct (89.5%), 375 remote tokens, 70 s wall time —
-17 of 19 tasks answered for zero tokens** (reproduced twice: 348 and 375
+distribution: **17/19 correct (89.5%), 347 remote tokens — 17 of 19 tasks
+answered for zero tokens** (earlier revisions reproduced at 348 and 375
 tokens). That is a 96% token cut from our all-remote v4 (19/19, 8,618) for
 two proxy-set misses, and the only remote spend left is the two factual
 tasks both local models are *measurably wrong* about — every other category
-resolves free behind its guard, and the hard budget caps the total at 480
-even on a hostile task set (receipts committed in `eval_results/hard_v5_*`).
+resolves free behind its guard, the hard budget caps the total at 480 even
+on a hostile task set, and the deadline governor caps total runtime even on
+a hostile CPU (receipts committed in `eval_results/hard_v5_*`).
 
 ## Technology & Category Tags
 
@@ -107,7 +127,7 @@ even on a hostile task set (receipts committed in `eval_results/hard_v5_*`).
 1. **(0:00–0:20) Hook** — "Track 1 ranks by fewest tokens above an accuracy
    floor. Free 1B models save every token but scored us 57.9%. Strong remote
    models scored 19/19 but cost 8,618 tokens. The answer isn't picking a
-   side — it's *verification*: 89.5% at just 375 tokens, 17 of 19 tasks
+   side — it's *verification*: 89.5% at just 347 tokens, 17 of 19 tasks
    completely free — and a hard budget makes billing more than 480 tokens
    *impossible*, on any task set."
 2. **(0:20–0:50) The idea** — show the routing diagram (README): every task
@@ -118,11 +138,11 @@ even on a hostile task set (receipts committed in `eval_results/hard_v5_*`).
    limit — and a rejected attempt gets a free retry that names exactly what
    it got wrong. "We don't trust small models. We check them."
 3. **(0:50–1:20) Demo** — run the harness on the 19-task eval set, show
-   `results.json` appearing in ~70 seconds and the per-task decision log:
+   `results.json` appearing task by task (written after every answer) and the per-task decision log:
    17 tasks at zero tokens; the only two remote calls are the two factual
    tasks the local models are measurably wrong about — and each call first
    reserved its worst case against the hard 480-token run budget.
-4. **(1:20–1:45) Receipts** — 89.5% at 375 tokens (96% below our all-remote
+4. **(1:20–1:45) Receipts** — 89.5% at 347 tokens (96% below our all-remote
    build); the behavioral cross-execution guard accepting two independent
    correct factorial fixes; the worst-case drill: budget forced to 1 token,
    the run still finishes at 78.9% and ZERO remote tokens. Engineering by
@@ -148,7 +168,7 @@ even on a hostile task set (receipts committed in `eval_results/hard_v5_*`).
    code specialist that bills 2–3× the reasoning model for judge-equivalent
    answers; the math vote that never changed an answer; the split data
    showing the 1.5B wins every math/logic disagreement.
-6. Results — 17/19 (89.5%) · 375 tokens · 17/19 tasks free · 70 s (96%
+6. Results — 17/19 (89.5%) · 347 tokens · 17/19 tasks free (96%
    cheaper than the all-remote 19/19 build; only the two tasks the locals
    are measurably wrong about cost anything; a hard reserve-then-settle
    budget makes exceeding 480 billed tokens impossible on any task set).

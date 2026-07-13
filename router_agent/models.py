@@ -169,7 +169,8 @@ class OpenAICompatibleClient:
                               timeout=timeout or 300.0, max_retries=1)
 
     def chat(self, model: str, system: str, user: str,
-             max_tokens: int = 512, temperature: float = 0.0) -> ModelResponse:
+             max_tokens: int = 512, temperature: float = 0.0,
+             timeout: float | None = None) -> ModelResponse:
         kwargs = dict(
             model=model,
             messages=[
@@ -179,6 +180,11 @@ class OpenAICompatibleClient:
             max_tokens=max_tokens,
             temperature=temperature,
         )
+        if timeout is not None:
+            # per-call override: under wall-clock pressure the router shrinks
+            # this below the client default so one slow call can't eat the
+            # whole run budget
+            kwargs["timeout"] = timeout
         try:
             resp = self._client.chat.completions.create(
                 response_format={"type": "json_object"}, **kwargs)
@@ -208,7 +214,8 @@ class MockClient:
         self.persona = persona
 
     def chat(self, model: str, system: str, user: str,
-             max_tokens: int = 512, temperature: float = 0.0) -> ModelResponse:
+             max_tokens: int = 512, temperature: float = 0.0,
+             timeout: float | None = None) -> ModelResponse:
         lowered = user.lower()
         if "verdict" in system.lower():
             # low confidence on 'riddle' tasks -> exercises the remote path

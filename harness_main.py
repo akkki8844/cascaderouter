@@ -18,7 +18,19 @@ Runtime environment injected by the harness (never hardcoded):
 Budgets: container ready <60s, <30s per request, <10 min total runtime,
 grading environment 2 vCPU / 4 GB RAM (no Ollama pre-installed — ours is
 bundled in the image). Local models score as ZERO tokens; only Fireworks
-traffic counts, and the accuracy gate is 80% on a fixed 19-task set. For local testing you can override the I/O paths:
+traffic counts. The 2026-07-13 resubmission was killed at the 10-minute
+limit (local 1B inference is ~10x slower on 2 CPU cores than on the dev
+GPU), so v10 paces the whole run against a hard wall-clock deadline:
+
+  - tasks are answered in descending local-cost order, so if time runs
+    short it is the cheap-remote tasks that lose their local attempt;
+  - a TimeGovernor degrades the router (full guards -> no retry ladders ->
+    remote-fast-path) as time-per-remaining-task shrinks;
+  - /output/results.json is (re)written atomically after EVERY task, and a
+    watchdog flushes it and exits 0 before the kill — a partial score
+    always beats TIMEOUT.
+
+For local testing you can override the I/O paths:
   TASKS_INPUT=eval/sample_input.json RESULTS_OUTPUT=out.json python harness_main.py
 """
 
@@ -27,23 +39,49 @@ from __future__ import annotations
 import json
 import os
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from router_agent.config import apply_env_overrides, load_config
+from router_agent.confidence import classify_category
 from router_agent.decision_log import DecisionLogger
-from router_agent.router import RoutingAgent
+from router_agent.router import RoutingAgent, TimeGovernor
 from router_agent.task import task_from_raw
 
 INPUT_PATH = Path(os.environ.get("TASKS_INPUT", "/input/tasks.json"))
 OUTPUT_PATH = Path(os.environ.get("RESULTS_OUTPUT", "/output/results.json"))
-# The 10-minute cap is on the whole run; parallel tasks keep total wall time
-# down while each individual request stays under the 30s ceiling. Default 2:
-# the published grading environment is 2 vCPU / 4 GB RAM (organizer
-# clarification, 2026-07-08) — more workers than cores just deepens the
-# CPU-bound Ollama queue and risks per-request timeouts while queued.
-MAX_WORKERS = int(os.environ.get("AGENT_MAX_WORKERS", "2"))
+# Wall-clock budget for the whole harness process. The container is killed at
+# 10 minutes; entrypoint startup takes up to ~30s and the final write needs a
+# moment, so 520s leaves ~50s of safety margin end to end.
+RUN_TIME_BUDGET = float(os.environ.get("RUN_TIME_BUDGET_S", "520"))
+# Default 1: the grading environment is 2 vCPU and Ollama decodes one request
+# at a time there (OLLAMA_NUM_PARALLEL=1, entrypoint.sh) — a second worker
+# adds queue-wait to every local call's timeout window without adding any
+# throughput, and the run is local-dominated. Env-overridable for GPU dev.
+MAX_WORKERS = int(os.environ.get("AGENT_MAX_WORKERS", "1"))
+
+# Task scheduling order. Two pressures decide it:
+#  - BUDGET: factual goes first — its remote escalations are the one spend
+#    that buys accuracy (the locals are measurably wrong exactly when they
+#    disagree), so those calls must reserve budget before a big code/NER
+#    escalation can starve them (observed live: one 300-token NER escalation
+#    left the factual calls budget-denied).
+#  - TIME: after that, descending local-attempt cost, so if the deadline
+#    governor has to degrade the tail of the run to remote-fast-path, the
+#    tasks that lose their local attempt are the ones whose remote answers
+#    are cheapest (sentiment ~50-160 tokens vs code's ~300-700).
+_SCHED_ORDER = {"factual": 0, "code_debugging": 1, "code_generation": 2,
+                "math": 3, "logic": 3, "ner": 4, "summarization": 5,
+                "sentiment": 6}
+
+
+def _sched_rank(raw: dict) -> int:
+    try:
+        return _SCHED_ORDER.get(classify_category(str(raw.get("prompt", ""))), 4)
+    except Exception:
+        return 4
 
 
 def build_agent() -> RoutingAgent:
@@ -57,8 +95,13 @@ def build_agent() -> RoutingAgent:
     # 2. No 8B critic in the image (size/CPU budget) — disagreements go
     #    straight to remote verify instead.
     cfg.router.critique_enabled = False
-    # 3. Per-request timeout under the competition's 30s ceiling.
-    cfg.local.request_timeout = 25.0
+    # 3. Request timeouts. Remote stays under the 30s-per-request ceiling.
+    #    Local is the bundled Ollama on 2 CPU cores, where a 300-token
+    #    generation legitimately takes ~30-40s: a 25s timeout there just
+    #    discards nearly-finished work and retries it, compounding the very
+    #    slowness that killed the run — the TimeGovernor bounds total time
+    #    instead, shrinking each call's timeout as the deadline nears.
+    cfg.local.request_timeout = 40.0
     cfg.remote.request_timeout = 25.0
     # 3b. Hard remote-token ceiling: rank is ascending Fireworks tokens, so
     #     the run's billed total must be bounded even on a hostile task set.
@@ -93,14 +136,53 @@ def main() -> int:
               file=sys.stderr)
         return 1
 
+    deadline = start + RUN_TIME_BUDGET
     agent = build_agent()
+    agent.governor = TimeGovernor(deadline, len(raw_tasks))
     logger = DecisionLogger(os.environ.get("DECISIONS_LOG",
                                            "logs/decisions.jsonl"))
 
-    def solve(raw: dict) -> dict:
-        """One task -> one result row. Never raises: a single bad task must
-        not cost the whole submission (malformed output scores zero)."""
-        task_id = str(raw.get("task_id", raw.get("id", "")))
+    def tid_of(raw) -> str:
+        if isinstance(raw, dict):
+            return str(raw.get("task_id", raw.get("id", "")))
+        return ""
+
+    # answers indexed by ORIGINAL input position; pre-seeded empty so every
+    # snapshot — including a watchdog flush mid-run — covers every task_id.
+    answers: dict[int, str] = {}
+    answers_lock = threading.Lock()
+
+    def snapshot() -> None:
+        """Atomically (re)write results.json with everything answered so
+        far. Called after every task and by the watchdog: the output file
+        is always present and always valid JSON, so a killed run is still
+        a scoreable run."""
+        with answers_lock:
+            rows = [{"task_id": tid_of(raw), "answer": answers.get(i, "")}
+                    for i, raw in enumerate(raw_tasks)]
+        OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
+        tmp = OUTPUT_PATH.with_suffix(".tmp")
+        tmp.write_text(json.dumps(rows, ensure_ascii=False, indent=2),
+                       encoding="utf-8")
+        tmp.replace(OUTPUT_PATH)  # atomic: never a half-written results file
+
+    def flush_and_exit() -> None:
+        snapshot()
+        print(f"WATCHDOG: wall-clock budget ({RUN_TIME_BUDGET:.0f}s) hit — "
+              f"flushed {sum(1 for a in answers.values() if a)} answers and "
+              "exiting before the container limit.", file=sys.stderr)
+        sys.stderr.flush()
+        os._exit(0)  # worker threads may be mid-request; the file is written
+
+    watchdog = threading.Timer(max(deadline - time.time(), 1.0),
+                               flush_and_exit)
+    watchdog.daemon = True
+    watchdog.start()
+
+    def solve(item: tuple[int, dict]) -> None:
+        """One task -> one stored answer. Never raises: a single bad task
+        must not cost the whole submission (malformed output scores zero)."""
+        index, raw = item
         try:
             task = task_from_raw(raw)
             decision = agent.answer(task)
@@ -108,22 +190,23 @@ def main() -> int:
                 logger.log(decision)
             except Exception:
                 pass  # logging must never break the run
-            return {"task_id": task.id, "answer": str(decision.answer)}
+            answer = str(decision.answer)
         except Exception as exc:
-            print(f"  task {task_id!r} failed: {exc}", file=sys.stderr)
-            return {"task_id": task_id, "answer": ""}
+            print(f"  task {tid_of(raw)!r} failed: {exc}", file=sys.stderr)
+            answer = ""
+        with answers_lock:
+            answers[index] = answer
+        agent.governor.task_done()
+        snapshot()
 
+    ordered = sorted(enumerate(raw_tasks), key=lambda kv: _sched_rank(kv[1]))
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
-        results = list(pool.map(solve, raw_tasks))
+        list(pool.map(solve, ordered))
 
-    OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    tmp = OUTPUT_PATH.with_suffix(".tmp")
-    tmp.write_text(json.dumps(results, ensure_ascii=False, indent=2),
-                   encoding="utf-8")
-    tmp.replace(OUTPUT_PATH)  # atomic: never leave a half-written results file
-
+    watchdog.cancel()
+    snapshot()
     elapsed = time.time() - start
-    print(f"done: {len(results)} tasks in {elapsed:.1f}s -> {OUTPUT_PATH}",
+    print(f"done: {len(raw_tasks)} tasks in {elapsed:.1f}s -> {OUTPUT_PATH}",
           file=sys.stderr)
     return 0
 

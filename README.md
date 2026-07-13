@@ -4,7 +4,7 @@
 
 An AI agent that answers every task with the **cheapest source that can be mechanically trusted** — free bundled local models behind hard acceptance guards (dual-model agreement, behavioral cross-execution of code fixes, compile checks, completeness checks, length-constraint checks) with targeted free retries, escalating to the measured-cheapest strong remote model only where the guards prove the free answer can't be trusted. The leaderboard ranks by fewest tokens above an accuracy floor; the router spends remote tokens only on the tasks the local models are *measurably wrong* about — and a **hard run-wide budget guarantees the billed total can never exceed 480 tokens, on any task set**.
 
-**Internal validation on real Fireworks models (19-task set mirroring the grading distribution, no mocks): 17/19 correct (89.5%), 375 remote tokens, 70 s wall time — 17 of 19 tasks answered for zero tokens** (`eval_results/hard_v5_decisions.jsonl`; reproduced at 348/375 tokens). Worst-case drill: with the budget forced to 1 token the same run completes at 15/19 (78.9%) and exactly **0** remote tokens. See `AMDPLAN/IMPLEMENTATION.md` for the full build record and `AMDPLAN/RUN.md` for a copy-paste run guide.
+**Internal validation on real Fireworks models (19-task set mirroring the grading distribution, no mocks): 17/19 correct (89.5%), 347 remote tokens — 17 of 19 tasks answered for zero tokens** (`eval_results/hard_v5_decisions.jsonl`; earlier revisions reproduced at 348/375 tokens). Worst-case drills: with the budget forced to 1 token the run completes at 78.9% and exactly **0** remote tokens; with the wall clock forced to 55 s the deadline governor still emits a complete, valid `results.json` and exits 0. See `AMDPLAN/IMPLEMENTATION.md` for the full build record and `AMDPLAN/RUN.md` for a copy-paste run guide.
 
 ## The submission contract (Participant Guide compliance)
 
@@ -36,22 +36,20 @@ task ──▶ within-run dedup cache ──hit──▶ answer (0 tokens)
               │
     ┌──────────────┬───────────────┬───────────────┬───────────────┐
     │              │               │               │               │
-sentiment /     code gen       summarization      NER          code debug
-factual /          │               │               │               │
-math / logic       ▼               ▼               ▼               ▼
-    │         local qwen;     local qwen;     both locals;    BOTH locals
-    ▼         accept ONLY     accept ONLY if  accept ONLY if  emit forced-
-dual-local    if it compiles  explicit word/  every capital-  code fixes;
-agreement     + defines the   sentence limit  ized source     accept ONLY if
-(2 lineages   requested       is met; free    word appears +  both compile,
-must agree;   function        retries state   sane type       change the bug,
-numeric-                      a HARDER limit, labels; free    and AGREE when
-aware)                        then shorten    retries name    EXECUTED side
-    │                         the previous    the exact       by side on a
-    │                         attempt         missed words    probe battery
-    │                                                         (sandboxed)
-    ├─ math/logic split: the stronger local's distilled answer
-    │  stands (probe-verified it wins every measured split) — free
+sentiment /     code gen /     summarization      NER          code debug
+factual         math & logic       │               │               │
+    │              │               ▼               ▼               ▼
+    ▼              ▼          local qwen;     both locals;    BOTH locals
+dual-local    local qwen      accept ONLY if  accept ONLY if  emit forced-
+agreement     (solo); code    explicit word/  every capital-  code fixes;
+(2 lineages   must compile    sentence limit  ized source     accept ONLY if
+must agree;   + define the    is met; free    word appears +  both compile,
+numeric-      requested       retries state   sane type       change the bug,
+aware)        function;       a HARDER limit, labels; free    and AGREE when
+    │         math/logic      then shorten    retries name    EXECUTED side
+    │         distilled to    the previous    the exact       by side on a
+    │         the final       attempt         missed words    probe battery
+    │         answer                                          (sandboxed)
     │ guard fails / factual split / blank / error
     ▼
 ONE call to the measured-cheapest strong remote model per category:
@@ -70,7 +68,8 @@ Key techniques (see `AMDPLAN/03_ARCHITECTURE.md` for the full design rationale):
 - **Free answers only behind mechanical guards** — the v3 lesson (57.9% real score) is that 1B local models can't be *trusted*; the v7/v8 insight is they don't need to be — they need to be *checked*. Dual-lineage agreement for short answers, `compile()` + function-name checks for generated code, capitalized-phrase completeness + type-sanity for NER, word/sentence-limit checks for summaries, and for code debugging the strongest guard in the router: both lineages produce forced-code fixes that are accepted only when they compile, actually change the buggy code, and **agree behaviorally when executed side by side** on a probe battery in a sandboxed, hard-timeout subprocess. Every guard failure escalates; a local miss costs latency, never an answer. Result: 17 of 19 validation tasks answered for zero tokens with no measured accuracy loss.
 - **Targeted free retries** — a guard doesn't just reject, it says *why*, and the retry feeds that back: an incomplete NER answer is retried with the exact capitalized words it missed; a complete-but-untyped one is retried with its own list and an order to label it; an over-long summary first gets a HARDER stated limit, then a rewrite pass shortening its own previous attempt (compression is far easier for a small model than constrained generation). Local retries score zero tokens.
 - **Category-aware, cost-measured remote selection** — when a guard does escalate, the call goes to the allowed model that delivers a correct answer for the fewest measured tokens: `minimax-m3`'s terse deterministic JSON for code and NER (~290–380 tokens/task vs kimi's volatile 400–940 for judge-equivalent answers), `kimi-k2p7-code` for factual and math/logic (it alone answered every trick question correctly), Gemma-4 checkpoints leading sentiment and summarization.
-- **Splits identify the winner** — on a math/logic disagreement the stronger local's distilled answer stands for free (probe-verified it won every measured split), while a factual split still escalates (there both locals were measured wrong *together*). The only remote tokens in the final validation run are the two factual tasks the locals provably can't answer.
+- **Splits identify the winner** — v8 ran both locals on math/logic and measured that on every disagreement the stronger 1.5B was right, meaning the final answer always equaled the 1.5B's whether or not the 1B agreed; v10 therefore drops the 1B call entirely (same answers, half the CPU time). A factual split still escalates (there both locals were measured wrong *together*). The only remote tokens in the final validation run are the two factual tasks the locals provably can't answer.
+- **Wall-clock deadline governor (v10)** — the grading VM is 2 vCPU/4 GB and kills the container at 10 minutes; local 1B inference there is ~10× slower than on a GPU dev box (a real resubmission TIMED OUT this way). The whole run is now paced against a hard deadline: tasks execute factual-first then descending local-cost (so budget-critical escalations reserve first and any degraded tail is the cheapest-remote tasks), a `TimeGovernor` steps the router down from full guards → no retry ladders → remote-fast-path as time-per-remaining-task shrinks, per-call timeouts shrink near the deadline, `results.json` is atomically rewritten after **every** task, and a watchdog flushes and exits 0 before the kill — a partial score always beats TIMEOUT. Ollama is pinned to keep both models resident (`OLLAMA_KEEP_ALIVE=-1`, no unload thrash) and decode one request at a time (`OLLAMA_NUM_PARALLEL=1` — on 2 cores parallel decode only adds timeout risk), with both models warmed at startup.
 - **Single-call math/logic** — v4's cross-family confirmation vote never changed the first model's answer in any validated run, so it's gone: one strong-model call with a reasoning-tuned prompt, tier escalation only on blank.
 - **Never-blank guarantee** — reasoning-channel models can return HTTP 200 with empty content when truncated; an empty answer is a guaranteed zero. Every route escalates through the remaining allowed models on failure *or* blank output, ending at the bundled local models as a last resort.
 - **Structured JSON output on every tier** — no preamble or filler tokens, ever; short-form categories answer with a bare label/number/name.
