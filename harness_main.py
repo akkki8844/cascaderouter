@@ -53,9 +53,13 @@ from router_agent.task import task_from_raw
 INPUT_PATH = Path(os.environ.get("TASKS_INPUT", "/input/tasks.json"))
 OUTPUT_PATH = Path(os.environ.get("RESULTS_OUTPUT", "/output/results.json"))
 # Wall-clock budget for the whole harness process. The container is killed at
-# 10 minutes; entrypoint startup takes up to ~30s and the final write needs a
-# moment, so 520s leaves ~50s of safety margin end to end.
-RUN_TIME_BUDGET = float(os.environ.get("RUN_TIME_BUDGET_S", "520"))
+# 10 minutes, and the scorer's clock may also count container-start overhead
+# (image extraction, entrypoint startup ~30s) that we can't see — so leave a
+# wide margin: 450s here caps the whole container well under 9 minutes. The
+# projected full run is 330-400s on the 2-vCPU grading box, so nothing is
+# normally lost; if the box is slower, the watchdog turns the overrun into a
+# partial score instead of a TIMEOUT.
+RUN_TIME_BUDGET = float(os.environ.get("RUN_TIME_BUDGET_S", "450"))
 # Default 1: the grading environment is 2 vCPU and Ollama decodes one request
 # at a time there (OLLAMA_NUM_PARALLEL=1, entrypoint.sh) — a second worker
 # adds queue-wait to every local call's timeout window without adding any
