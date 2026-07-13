@@ -63,9 +63,16 @@ class RouterConfig:
     # always_remote (v0) | always_local (v1) | heuristic (v2) | cascade (v3)
     strategy: str = "cascade"
     # Hard run-wide ceiling on billed remote (Fireworks) tokens; 0 disables.
-    # Harness mode sets this (REMOTE_TOKEN_BUDGET env, default 480) so the
-    # leaderboard number is bounded no matter what the hidden task set does.
+    # Harness mode sets this (REMOTE_TOKEN_BUDGET env) so the leaderboard
+    # number is bounded no matter what the hidden task set does.
     remote_token_budget: int = 0
+    # Skip the local-first tiers entirely: every task takes one remote call
+    # with its category prompt (local remains the last-resort fallback).
+    # Set in harness mode: the graded 5.3% run proved the local tier is
+    # unusable on the 2 vCPU / 4 GB grading VM — local attempts there burn
+    # their timeouts producing nothing, and remote is the only tier whose
+    # speed is independent of the box's CPU.
+    remote_first: bool = False
     escalation_threshold: float = 0.5
     critique_enabled: bool = True
     agreement_fuzzy_threshold: float = 0.90

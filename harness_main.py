@@ -60,11 +60,11 @@ OUTPUT_PATH = Path(os.environ.get("RESULTS_OUTPUT", "/output/results.json"))
 # normally lost; if the box is slower, the watchdog turns the overrun into a
 # partial score instead of a TIMEOUT.
 RUN_TIME_BUDGET = float(os.environ.get("RUN_TIME_BUDGET_S", "450"))
-# Default 1: the grading environment is 2 vCPU and Ollama decodes one request
-# at a time there (OLLAMA_NUM_PARALLEL=1, entrypoint.sh) — a second worker
-# adds queue-wait to every local call's timeout window without adding any
-# throughput, and the run is local-dominated. Env-overridable for GPU dev.
-MAX_WORKERS = int(os.environ.get("AGENT_MAX_WORKERS", "1"))
+# Default 2: the run is remote-first, i.e. network-I/O-bound — two in-flight
+# Fireworks requests cost the 2-vCPU box nothing and halve the worst-case
+# wall clock. (Local decode, when the fallback ever runs, is still serial:
+# OLLAMA_NUM_PARALLEL=1 in entrypoint.sh.) Env-overridable.
+MAX_WORKERS = int(os.environ.get("AGENT_MAX_WORKERS", "2"))
 
 # Task scheduling order. Two pressures decide it:
 #  - BUDGET: factual goes first — its remote escalations are the one spend
@@ -110,9 +110,18 @@ def build_agent() -> RoutingAgent:
     # 3b. Hard remote-token ceiling: rank is ascending Fireworks tokens, so
     #     the run's billed total must be bounded even on a hostile task set.
     #     Reserve-based, thread-safe; a refused call falls back to the free
-    #     local answer (see router._RemoteBudget).
+    #     local answer (see router._RemoteBudget). 20000 is a SAFETY ceiling,
+    #     not an optimization target: the graded 5.3% run showed a tight cap
+    #     (480) denying the remote calls that were the run's only working
+    #     tier — the accuracy gate (80%) must never lose to the token rank.
     cfg.router.remote_token_budget = int(
-        os.environ.get("REMOTE_TOKEN_BUDGET", "480"))
+        os.environ.get("REMOTE_TOKEN_BUDGET", "20000"))
+    # 3c. Remote-first: the local tier is a last-resort fallback only. On the
+    #     2 vCPU / 4 GB grading VM local 1B inference thrashes (both graded
+    #     local-first runs died: TIMEOUT, then 5.3%), while remote calls run
+    #     in seconds regardless of the box. REMOTE_FIRST=0 restores the
+    #     guarded local-first cascade for local experimentation.
+    cfg.router.remote_first = os.environ.get("REMOTE_FIRST", "1") != "0"
     # 4. The local tier is the Ollama bundled in this container; config.yaml
     #    already points at localhost:11434. LOCAL_BASE_URL overrides it for
     #    local testing against a differently-hosted server.
@@ -155,6 +164,8 @@ def main() -> int:
     # snapshot — including a watchdog flush mid-run — covers every task_id.
     answers: dict[int, str] = {}
     answers_lock = threading.Lock()
+    snapshot_lock = threading.Lock()  # two workers writing the same .tmp
+    # concurrently is a crash on Windows and a corruption race anywhere
 
     def snapshot() -> None:
         """Atomically (re)write results.json with everything answered so
@@ -164,11 +175,12 @@ def main() -> int:
         with answers_lock:
             rows = [{"task_id": tid_of(raw), "answer": answers.get(i, "")}
                     for i, raw in enumerate(raw_tasks)]
-        OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
-        tmp = OUTPUT_PATH.with_suffix(".tmp")
-        tmp.write_text(json.dumps(rows, ensure_ascii=False, indent=2),
-                       encoding="utf-8")
-        tmp.replace(OUTPUT_PATH)  # atomic: never a half-written results file
+        with snapshot_lock:
+            OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
+            tmp = OUTPUT_PATH.with_suffix(".tmp")
+            tmp.write_text(json.dumps(rows, ensure_ascii=False, indent=2),
+                           encoding="utf-8")
+            tmp.replace(OUTPUT_PATH)  # atomic: never half-written results
 
     def flush_and_exit() -> None:
         snapshot()
@@ -201,7 +213,10 @@ def main() -> int:
         with answers_lock:
             answers[index] = answer
         agent.governor.task_done()
-        snapshot()
+        try:
+            snapshot()  # a transient write hiccup must not kill the run —
+        except Exception:   # the next task's snapshot (or the final one)
+            pass            # rewrites the complete file anyway
 
     ordered = sorted(enumerate(raw_tasks), key=lambda kv: _sched_rank(kv[1]))
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:

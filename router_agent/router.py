@@ -534,11 +534,13 @@ class RoutingAgent:
         features["category"] = category
         mode = self._mode()
         features["pacing"] = mode
-        if mode == "critical":
-            # Out of wall-clock room for CPU-slow local inference: one fast
-            # remote call decides the task (seconds, not tens of seconds).
-            # A budget refusal inside _remote_single still falls back to a
-            # short local draft — scored-but-imperfect beats TIMEOUT.
+        if mode == "critical" or self.cfg.router.remote_first:
+            # Out of wall-clock room for CPU-slow local inference (or the
+            # harness runs remote-first because the grading VM proved the
+            # local tier unusable): one fast remote call decides the task
+            # (seconds, not tens of seconds). A budget refusal inside
+            # _remote_single still falls back to a short local draft —
+            # scored-but-imperfect beats TIMEOUT.
             return self._critical_fast(task, category, features)
         if category == "sentiment":
             return self._local_pair_first(task, features, "sentiment",
@@ -955,10 +957,25 @@ class RoutingAgent:
         (when active): the reservation covers the whole worst case, so the
         run's billed Fireworks total can never exceed the cap. A refused
         call falls through to the free local last resort — over budget we
-        risk an answer, never the rank."""
+        risk an answer, never the rank.
+
+        Remote answers face the same MECHANICAL guards as local ones
+        (validated live: minimax describing a bug without emitting the fix,
+        and a 17-word summary against a 15-word cap): a guard failure
+        escalates to the next tier with the violated rule spelled out, and
+        the best imperfect answer is kept as the fallback — imperfect beats
+        blank."""
         remote_tokens = 0
         answer = ""
-        for i, tier_model in enumerate(self._tier_order(category)):
+        imperfect = ""  # best guard-failing answer, better than a blank
+        user = task.prompt
+        tiers = list(self._tier_order(category))
+        idx = 0
+        i = -1  # attempt counter (for feature keys)
+        retried_tier = False
+        while idx < len(tiers):
+            tier_model = tiers[idx]
+            i += 1
             want = max_tokens or self.cfg.remote.max_tokens
             reservation = 0
             if self._budget.active:
@@ -972,7 +989,7 @@ class RoutingAgent:
                 reservation, want = grant
             try:
                 resp = self._remote.chat(
-                    tier_model, system, task.prompt,
+                    tier_model, system, user,
                     max_tokens=want,
                     temperature=self.cfg.remote.temperature,
                     timeout=self._remote_timeout())
@@ -986,6 +1003,8 @@ class RoutingAgent:
                 if self._budget.active:
                     self._budget.settle(reservation, billed_guess)
                 features[f"tier{i + 1}_error"] = str(exc)[:200]
+                idx += 1
+                retried_tier = False
                 continue
             if self._budget.active:
                 self._budget.settle(reservation, resp.total_tokens)
@@ -993,8 +1012,42 @@ class RoutingAgent:
             answer = str(extract_json_field(resp.text, "answer")
                          or resp.text.strip())
             if answer:
+                fix_hint = self._remote_guard_failure(
+                    category, task.prompt, answer)
+                if fix_hint:
+                    features[f"tier{i + 1}_guard_failed"] = answer[:150]
+                    imperfect = imperfect or answer
+                    limit = (_WORD_LIMIT_RE.search(task.prompt)
+                             if category == "summarization" else None)
+                    if limit:
+                        # compressing an existing draft is far more reliable
+                        # than regenerating under a limit (probe-verified on
+                        # the local ladder; remote models blow hard word
+                        # caps too — observed 17 words against a 15 cap)
+                        user = (f"Shorten this to at most "
+                                f"{max(int(limit.group(1)) - 2, 5)} words, "
+                                "keeping the main point. Reply with the "
+                                f"shortened text only:\n{answer}")
+                    else:
+                        user = task.prompt + "\n" + fix_hint
+                    answer = ""
+                    # the model that produced the near-miss draft gets ONE
+                    # shot at correcting it before the next tier does — it
+                    # already understands the task (validated live: the
+                    # draft's own model shortens it best)
+                    if retried_tier:
+                        idx += 1
+                        retried_tier = False
+                    else:
+                        retried_tier = True
+                    continue
                 features["model"] = tier_model
                 break
+            idx += 1  # blank answer: next tier
+            retried_tier = False
+        if not answer and imperfect:
+            answer = imperfect
+            route += "_guard_waived"
         if not answer:
             answer = self._local_last_resort(task, system, features)
             route += "_local_fallback"
@@ -1002,6 +1055,54 @@ class RoutingAgent:
         return Decision(task.id, task.prompt, route, answer,
                         remote_tokens=remote_tokens, local_tokens=0,
                         latency_s=0.0, features=features)
+
+    def _remote_guard_failure(self, category: str | None, prompt: str,
+                              answer: str) -> str | None:
+        """Mechanical acceptance test for a REMOTE answer. Returns None when
+        the answer passes, else the corrective instruction to append to the
+        prompt for the next tier — the same checked-not-trusted stance the
+        local tiers get, because strong models fail mechanically too
+        (observed live: a bug description with no corrected code; a summary
+        2 words over a hard 15-word cap)."""
+        if category == "code_debugging":
+            if "def " not in answer:
+                return ("Your answer MUST include the FULL corrected code, "
+                        "not just a description of the bug.")
+            # candidate code slices: from the first def, and from the first
+            # LINE-ANCHORED import/from/class before it — a plain substring
+            # search false-rejects on prose like 'iterate from 1 to n'
+            start = answer.index("def ")
+            candidates = [answer[start:]]
+            m = re.search(r"^(?:import|from|class)\s", answer[:start],
+                          re.MULTILINE)
+            if m:
+                candidates.insert(0, answer[m.start():])
+            for code in candidates:
+                try:
+                    compile(code, "<remote-debug>", "exec")
+                    return None
+                except SyntaxError:
+                    continue
+            return "Your corrected code MUST be valid, compilable code."
+        if category == "code_generation":
+            if not _code_passes_guards(prompt, answer):
+                return ("Your answer MUST be complete, compilable code "
+                        "defining exactly the requested function.")
+            return None
+        if category == "summarization":
+            if len(answer) < 20 or answer.lstrip().startswith("<"):
+                # placeholder echoes ('<the summary>') and stubs are
+                # word-limit-legal but content-free — never accept them
+                return ("Reply with the actual summary text of the "
+                        "passage, meeting the stated length limit.")
+            if not _meets_length_constraint(prompt, answer):
+                m = _WORD_LIMIT_RE.search(prompt)
+                if m:
+                    return (f"HARD RULE: your summary must be {m.group(1)} "
+                            "words or FEWER. Count every word.")
+                return "HARD RULE: reply with EXACTLY ONE sentence."
+            return None
+        return None
 
     def _local_last_resort(self, task: Task, system: str,
                            features: dict) -> str:
