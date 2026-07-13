@@ -162,11 +162,15 @@ class OpenAICompatibleClient:
     def __init__(self, base_url: str, api_key: str,
                  timeout: float | None = None):
         from openai import OpenAI  # imported lazily so mock mode needs no SDK
-        # In harness mode config sets this to 25s (under the competition's
-        # 30s-per-request ceiling); local CPU dev leaves it generous.
-        # max_retries=1 so a flaky call can't silently eat the runtime budget.
+        # In harness mode config sets this to 40s local / 25s remote; local
+        # CPU dev leaves it generous.
+        # max_retries=0: the SDK's automatic retry REPEATS a timed-out request
+        # — on the CPU-slow grading VM that silently doubles every slow call's
+        # wall-clock cost, which is runtime-budget poison. The router already
+        # has its own recovery (tier escalation, local fallback), so a failed
+        # call should surface immediately, not be retried blind.
         self._client = OpenAI(base_url=base_url, api_key=api_key or "none",
-                              timeout=timeout or 300.0, max_retries=1)
+                              timeout=timeout or 300.0, max_retries=0)
 
     def chat(self, model: str, system: str, user: str,
              max_tokens: int = 512, temperature: float = 0.0,
@@ -185,9 +189,15 @@ class OpenAICompatibleClient:
             # this below the client default so one slow call can't eat the
             # whole run budget
             kwargs["timeout"] = timeout
+        from openai import APIConnectionError, APITimeoutError
         try:
             resp = self._client.chat.completions.create(
                 response_format={"type": "json_object"}, **kwargs)
+        except (APITimeoutError, APIConnectionError):
+            # A timeout/dead endpoint won't be cured by dropping
+            # response_format — re-running it would double the wall-clock
+            # cost of every slow call. Surface it; the router escalates.
+            raise
         except Exception:
             # Some backends/models reject response_format — retry without it.
             resp = self._client.chat.completions.create(**kwargs)
