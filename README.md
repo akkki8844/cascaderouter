@@ -14,7 +14,7 @@ The submitted artifact is a **single self-contained Docker image** (agent + Olla
 2. answers every task via the cascade below,
 3. writes `/output/results.json` (`[{"task_id": ..., "answer": ...}, ...]`) and exits 0.
 
-The judging harness injects — and the container reads at runtime, never hardcodes:
+The judging harness injects — and the container reads at runtime, never hard-codes:
 
 | Env var | Use |
 |---|---|
